@@ -1,10 +1,32 @@
 # Keplearn
 
-Keplearn is a deterministic symbolic regression engine written in Rust. It
-recovers closed-form equations from tabular data by best-first recursive
-reduction. The program reads a TSV or CSV table from standard input and returns
-candidate expressions for one column written in terms of the others. It has
-no dependencies and builds to a single binary.
+**Symbolic regression in seconds.**
+
+Keplearn is named after Johannes Kepler, who deduced his laws of planetary motion by studying tables of astronomical observations taken by Tycho Brahe. That is what this program attempts to do: given columns of measurements, find the compact law that relates them.
+
+```text
+    m1   |  m2   |  r   | force
+   ------+-------+------+-------
+    1.0  |  2.0  | 1.0  |  2.00
+    2.0  |  2.0  | 2.0  |  1.00        ┌──────────┐
+    1.5  |  3.0  | 3.0  |  0.50  ──►   │ keplearn │ ──►   force = m1 * m2 / r**2
+    2.5  |  1.0  | 0.5  | 10.00        └──────────┘
+    3.0  |  4.0  | 2.0  |  3.00
+```
+
+More formally, it's a deterministic symbolic regression engine (written in
+Rust) that recovers closed-form equations from tabular data by best-first
+recursive reduction.
+
+- Reads a TSV or CSV from stdin, prints candidate equations as JSON
+- Single binary, zero dependencies (fully static with the musl target)
+- Designed to answer in seconds: exact laws usually resolve in
+  milliseconds, and `--timeout` caps the hard cases
+- Deterministic; the same input produces the same output, byte for byte
+- The reported `r2` is computed from the printed equation itself, never
+  from an internal fitting stage
+- Fitted constants snap to rationals and multiples of pi, e, and sqrt(2),
+  with every snap verified before it is kept
 
 ## Method
 
