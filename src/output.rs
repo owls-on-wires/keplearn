@@ -43,3 +43,62 @@ pub(crate) fn jopt_u(x: Option<usize>) -> String {
         None => "null".to_string(),
     }
 }
+
+pub(crate) fn json_pretty(s: &str) -> String {
+    let mut out = String::with_capacity(s.len() * 2);
+    let mut indent = 0usize;
+    let mut in_str = false;
+    let mut esc = false;
+    let mut chars = s.chars().peekable();
+    fn newline(out: &mut String, n: usize) {
+        out.push('\n');
+        for _ in 0..n {
+            out.push_str("  ");
+        }
+    }
+    while let Some(c) = chars.next() {
+        if in_str {
+            out.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+            continue;
+        }
+        match c {
+            '"' => {
+                in_str = true;
+                out.push(c);
+            }
+            '{' | '[' => {
+                out.push(c);
+                let closer = if c == '{' { '}' } else { ']' };
+                if chars.peek() == Some(&closer) {
+                    out.push(closer);
+                    chars.next();
+                } else {
+                    indent += 1;
+                    newline(&mut out, indent);
+                }
+            }
+            '}' | ']' => {
+                indent = indent.saturating_sub(1);
+                newline(&mut out, indent);
+                out.push(c);
+            }
+            ',' => {
+                out.push(c);
+                newline(&mut out, indent);
+            }
+            ':' => {
+                out.push_str(": ");
+            }
+            c if c.is_whitespace() => {}
+            _ => out.push(c),
+        }
+    }
+    out
+}

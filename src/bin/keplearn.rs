@@ -19,6 +19,8 @@ OPTIONS:
   --quick-n N             rows for the quick pre-probe (default: 50)
   --timeout MS            wall-clock budget in milliseconds; best-so-far is
                           emitted on expiry (default: 0 = unbounded)
+  -o, --out FILE          write the result JSON to FILE instead of stdout
+  --pretty                indent the result JSON for reading
   --max-depth D           clamp search depth downward (default: compiled max)
   --trace FILE            append a JSONL event trace to FILE
   --dump-candidates FILE  write the full scored candidate list to FILE
@@ -124,6 +126,8 @@ fn main() {
     let mut max_depth: Option<usize> = None;
     let mut trace_path = String::new();
     let mut dump_candidates_path = String::new();
+    let mut out_path = String::new();
+    let mut pretty = false;
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -158,6 +162,14 @@ fn main() {
             "--max-depth" => {
                 max_depth = Some(parse_val(&args, i, "--max-depth"));
                 i += 2;
+            }
+            "-o" | "--out" => {
+                out_path = take_val(&args, i, "--out").to_string();
+                i += 2;
+            }
+            "--pretty" => {
+                pretty = true;
+                i += 1;
             }
             "--trace" => {
                 trace_path = take_val(&args, i, "--trace").to_string();
@@ -205,5 +217,7 @@ fn main() {
         max_depth,
         trace_path,
         dump_candidates_path,
+        out_path,
+        pretty,
     });
 }

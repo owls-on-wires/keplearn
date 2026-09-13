@@ -566,3 +566,32 @@ fn parser_rejects_bad_variable_indices() {
     assert!(Parser::parse("x99999999999999999999999").is_err());
     assert!(Parser::parse("x1").is_ok());
 }
+
+#[test]
+fn json_pretty_formats_without_touching_tokens() {
+    let compact = r#"{"results":[{"expr":"(x1*x2)","r2":1.0,"columns":[0,1],"note":"a\"b, {c}"}],"n":0,"empty":[]}"#;
+    let pretty = json_pretty(compact);
+    let mut squashed = String::new();
+    let (mut in_str, mut esc) = (false, false);
+    for c in pretty.chars() {
+        if in_str {
+            squashed.push(c);
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            }
+        } else if !c.is_whitespace() {
+            if c == '"' {
+                in_str = true;
+            }
+            squashed.push(c);
+        }
+    }
+    assert_eq!(squashed, compact);
+    assert!(pretty.contains("\n  \"results\": ["));
+    assert!(pretty.contains(r#""a\"b, {c}""#));
+    assert!(pretty.contains("\"empty\": []"));
+}

@@ -1,12 +1,6 @@
 # Keplearn
 
-*Symbolic regression in seconds.*
-
-**Download**
-
-[![Linux](https://img.shields.io/badge/Linux-x86__64-2ea44f?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-linux-x86_64)
-[![macOS](https://img.shields.io/badge/macOS-universal-2ea44f?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-macos-universal)
-[![Windows](https://img.shields.io/badge/Windows-x86__64-2ea44f?style=for-the-badge&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-windows-x86_64.exe)
+**Symbolic regression in seconds.**
 
 Keplearn is named after Johannes Kepler, who deduced his laws of planetary motion by studying tables of astronomical observations taken by Tycho Brahe. That is what this program attempts to do: given columns of measurements, find the compact law that relates them.
 
@@ -34,6 +28,84 @@ recursive reduction.
 - Fitted constants snap to rationals and multiples of pi, e, and sqrt(2),
   with every snap verified before it is kept
 
+## Download
+
+[![macOS](https://img.shields.io/badge/macOS-universal-2ea44f?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-macos-universal)
+[![Windows](https://img.shields.io/badge/Windows-x86__64-2ea44f?style=for-the-badge&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-windows-x86_64.exe)
+[![Linux](https://img.shields.io/badge/Linux-x86__64-2ea44f?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-linux-x86_64)
+
+**macOS** (universal: Apple Silicon and Intel)
+
+```sh
+curl -L -o keplearn https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-macos-universal
+chmod +x keplearn
+./keplearn --help
+```
+
+**Windows** (PowerShell)
+
+```powershell
+curl.exe -L -o keplearn.exe https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-windows-x86_64.exe
+.\keplearn.exe --help
+```
+
+**Linux** (x86_64, fully static)
+
+```sh
+curl -L -o keplearn https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-linux-x86_64
+chmod +x keplearn
+./keplearn --help
+```
+
+## Usage
+
+Name the column to predict with `--target` (the default is a column called
+`target`) and pipe in a TSV or CSV with a header row. The delimiter comes
+from the header: tab if present, else comma.
+
+```sh
+$ ./keplearn --target force --top-k 1 --pretty --out laws.json < gravity.tsv
+$ cat laws.json
+{
+  "results": [
+    {
+      "expr": "((x1**(1))*(x2**(1))*(x3**(-2)))",
+      "r2": 1.0000000000,
+      "search_r2": 1.0000000000,
+      "holdout_r2": 0.9999999999998754,
+      "scale": 0.9999984680738088,
+      "offset": 0.000011830325937959667,
+      "columns": [
+        0,
+        1,
+        2
+      ],
+      "factor": "direct",
+      "model": "((x1*x2)*((x3)**(-2)))"
+    }
+  ],
+  "time_ms": 0,
+  "n_expressions": 0,
+  "n_evaluated": 0,
+  "stopped_by": "exact_exit"
+}
+```
+
+`x1..xN` are the feature columns in file order, target excluded; here
+x1=m1, x2=m2, x3=r, so the recovered law reads m1*m2/r**2. Candidates
+arrive best-first: `results[0].model` is the answer and its `r2` is scored
+on the supplied data. Diagnostics print to stderr, so stdout is always one
+JSON object.
+
+Useful flags:
+
+```sh
+./keplearn --target Tc --timeout 60000 < superconductors.csv   # cap the search at 60 s
+./keplearn --top-k 3 < data.tsv                                # emit the 3 best candidates
+./keplearn --target y --sample 1000 < big.tsv                  # screen on more rows
+./keplearn --help                                              # full flag list and output schema
+```
+
 ## Method
 
 The engine searches over chains of invertible reductions applied to the
@@ -52,41 +124,6 @@ then simplified algebraically, refit for scale and offset against the full
 dataset, and re-scored. The `r2` in the output comes from evaluating the
 printed model string; it is not carried over from any internal fitting
 stage.
-
-## Usage
-
-```
-cargo build --release
-./target/release/keplearn --help
-./target/release/keplearn --target y --timeout 60000 < data.tsv
-```
-
-The input is a TSV or CSV with a header row on standard input (the
-delimiter is taken from the header: tab if present, else comma), and every
-column
-except the target is treated as a feature. The output is one JSON object on
-standard output with up to `--top-k` candidate models, best first. Each
-entry carries the closed-form `model` string in `x1..xN` together with its
-`r2` on the supplied data. Diagnostics print to stderr.
-
-```
-$ printf 'a\tb\ttarget\n1\t2\t5\n2\t3\t12\n3\t1\t7\n4\t5\t29\n5\t2\t17\n6\t4\t34\n' | \
-    ./target/release/keplearn
-{"results":[{"expr":"...","r2":1.0000000000,...,"model":"..."}],...}
-```
-
-The `--help` output documents the full flag list, the output schema, and
-usage notes.
-
-## Fixtures
-
-The `fixtures/` directory holds small TSVs with known closed forms for a
-quick check:
-
-```
-./target/release/keplearn --timeout 5000 < fixtures/fx_monomial.tsv
-# results[0].model = (x1*x2), r2 = 1.0
-```
 
 ## License
 

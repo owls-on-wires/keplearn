@@ -11,6 +11,8 @@ pub struct Config {
     pub max_depth: Option<usize>,
     pub trace_path: String,
     pub dump_candidates_path: String,
+    pub out_path: String,
+    pub pretty: bool,
 }
 
 pub(crate) fn split_row(line: &str, delim: char) -> Vec<String> {
@@ -170,6 +172,8 @@ pub fn run(cfg: Config) {
         max_depth,
         trace_path,
         dump_candidates_path,
+        out_path,
+        pretty,
         ..
     } = cfg;
     let eff_max_depth = max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH);
@@ -719,10 +723,13 @@ pub fn run(cfg: Config) {
         best_gate,
         finalists.len()
     );
-    print!("{{\"results\":[");
+    use std::fmt::Write as FmtWrite;
+    let mut oj = String::new();
+    let _ = write!(oj, "{{\"results\":[");
     if abstain {
         let mc = fmt_const(train_mean);
-        print!(
+        let _ = write!(
+            oj,
             "{{\"expr\":\"{}\",\"r2\":0.0000000000,\"search_r2\":0.0000000000,\"holdout_r2\":null,\"scale\":1,\"offset\":0,\"columns\":[],\"factor\":\"direct\",\"model\":\"{}\"}}",
             mc, mc
         );
@@ -731,7 +738,7 @@ pub fn run(cfg: Config) {
         for (i, &ci) in order.iter().take(top_k).enumerate() {
             let c = &finalists[ci];
             if i > 0 {
-                print!(",");
+                let _ = write!(oj, ",");
             }
             let (out_expr, out_cols, out_scale, out_offset): (&str, &[usize], f64, f64) =
                 if c.root_raw {
@@ -739,7 +746,8 @@ pub fn run(cfg: Config) {
                 } else {
                     (&c.model, &identity_cols, 1.0, 0.0)
                 };
-            print!(
+            let _ = write!(
+                oj,
                 "{{\"expr\":\"{}\",\"r2\":{:.10},\"search_r2\":{:.10},\"holdout_r2\":{},\"scale\":{},\"offset\":{},\"columns\":{:?},\"factor\":\"direct\",\"model\":\"{}\"}}",
                 json_esc(out_expr), out_r2[ci].unwrap_or(- 1.0), c.fit_r2,
                 jopt_f(out_ho[ci]), out_scale, out_offset, out_cols, json_esc(& c.model)
@@ -753,12 +761,21 @@ pub fn run(cfg: Config) {
     } else {
         "frontier_exhausted"
     };
-    println!(
+    let _ = write!(
+        oj,
         "],\"time_ms\":{},\"n_expressions\":0,\"n_evaluated\":{},\"stopped_by\":\"{}\"}}",
         elapsed.as_millis(),
         n_evaluated,
         stopped_by
     );
+    let mut rendered = if pretty { json_pretty(&oj) } else { oj };
+    rendered.push('\n');
+    if out_path.is_empty() {
+        print!("{}", rendered);
+    } else if let Err(e) = fs::write(&out_path, &rendered) {
+        eprintln!("keplearn: cannot write output file '{}': {}", out_path, e);
+        std::process::exit(1);
+    }
     if trace_enabled() {
         let (bdesc, bexpr, br2) = chosen_idx
             .map(|ci| {
