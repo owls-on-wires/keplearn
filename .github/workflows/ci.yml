@@ -1,0 +1,16 @@
+name: CI
+on: [push, pull_request]
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - run: cargo build --release
+      - run: cargo test --release
+      - run: cargo fmt --check
+      - name: fixture self-check
+        run: |
+          out=$(./target/release/keplearn --timeout 10000 < fixtures/fx_monomial.tsv)
+          echo "$out" | grep -q '"model":"(x1\*x2)"'
+          out=$(./target/release/keplearn --timeout 10000 < fixtures/fx_composed.tsv)
+          echo "$out" | grep -q '"r2":1.0000000000'
