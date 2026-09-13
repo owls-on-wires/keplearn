@@ -1,0 +1,54 @@
+name: Release
+on:
+  push:
+    tags: ["v*"]
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    strategy:
+      matrix:
+        include:
+          - os: ubuntu-latest
+            asset: keplearn-linux-x86_64
+          - os: macos-latest
+            asset: keplearn-macos-universal
+          - os: windows-latest
+            asset: keplearn-windows-x86_64.exe
+    runs-on: ${{ matrix.os }}
+    steps:
+      - uses: actions/checkout@v4
+      - name: Build (Linux, static musl)
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update -q && sudo apt-get install -yq musl-tools
+          rustup target add x86_64-unknown-linux-musl
+          cargo build --release --target x86_64-unknown-linux-musl
+          cp target/x86_64-unknown-linux-musl/release/keplearn "${{ matrix.asset }}"
+          strip "${{ matrix.asset }}"
+      - name: Build (macOS, universal)
+        if: runner.os == 'macOS'
+        run: |
+          rustup target add x86_64-apple-darwin aarch64-apple-darwin
+          cargo build --release --target x86_64-apple-darwin
+          cargo build --release --target aarch64-apple-darwin
+          lipo -create -output "${{ matrix.asset }}" \
+            target/x86_64-apple-darwin/release/keplearn \
+            target/aarch64-apple-darwin/release/keplearn
+          strip "${{ matrix.asset }}"
+      - name: Build (Windows, static CRT)
+        if: runner.os == 'Windows'
+        shell: bash
+        run: |
+          RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
+          cp target/release/keplearn.exe "${{ matrix.asset }}"
+      - name: Upload to release
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
