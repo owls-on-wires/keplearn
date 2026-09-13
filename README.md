@@ -1,14 +1,12 @@
 # Keplearn
 
-**Symbolic regression in seconds.**
+*Symbolic regression in seconds.*
+
+**Download**
 
 [![Linux](https://img.shields.io/badge/Linux-x86__64-2ea44f?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-linux-x86_64)
 [![macOS](https://img.shields.io/badge/macOS-universal-2ea44f?style=for-the-badge&logo=apple&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-macos-universal)
 [![Windows](https://img.shields.io/badge/Windows-x86__64-2ea44f?style=for-the-badge&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-windows-x86_64.exe)
-
-The buttons download the prebuilt binary from the latest release
-(`chmod +x` it on Linux and macOS). Building from source is one command;
-see Usage.
 
 Keplearn is named after Johannes Kepler, who deduced his laws of planetary motion by studying tables of astronomical observations taken by Tycho Brahe. That is what this program attempts to do: given columns of measurements, find the compact law that relates them.
 
@@ -55,22 +53,6 @@ dataset, and re-scored. The `r2` in the output comes from evaluating the
 printed model string; it is not carried over from any internal fitting
 stage.
 
-The pipeline contains no randomness. Runs are reproducible byte for byte.
-
-## Results
-
-The scores below come from SRBench's containerized grader, which checks
-symbolic equivalence with sympy. Each fit ran under a 60 second budget at
-noise level 0.
-
-| suite | symbolic solution rate |
-|---|---|
-| Feynman (116) | 75/116 = 64.7% |
-| Strogatz (14) | 6/14 = 42.9% |
-
-The highest published Feynman symbolic rate on SRBench is AIFeynman at
-55.8%; the next group of methods sits near 27%.
-
 ## Usage
 
 ```
@@ -108,5 +90,6 @@ quick check:
 
 ## License
 
-Keplearn is released under the MIT license. It was written by Chandler
-Freeman <chandler@mnty.sh> (https://github.com/owls-on-wires).
+Keplearn is released under the MIT license.
+
+Created by Chandler Freeman <chandler@mnty.sh> (https://github.com/owls-on-wires).
