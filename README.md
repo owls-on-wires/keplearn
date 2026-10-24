@@ -149,6 +149,19 @@ median test R2 is near zero (about -0.003). Keplearn targets exact analytic
 laws rather than general curve fitting, and that result reflects the
 trade-off.
 
+Fit time under the same 60 second cap, one core per fit:
+
+| suite | median | mean | max | fits under 1 s |
+|---|---|---|---|---|
+| Feynman, noise 0 | 1.3 s | 13.3 s | 60.7 s | 55/116 |
+| Feynman, noise 0.001-0.1 | 11-14 s | 15-23 s | 60.7 s | 0/348 |
+| Strogatz, all noise levels | 1.3 s | 1.5 s | 3.6 s | 8/56 |
+| Black-box | 60.0 s | 39.1 s | 65.8 s | 15/138 |
+
+Solved cases exit early. At noise 0, half the Feynman suite finishes in under
+a second; under noise the exact-exit path cannot fire, so those fits run to
+the cap.
+
 ## License
 
 Keplearn is released under the MIT license.
