@@ -125,6 +125,30 @@ dataset, and re-scored. The `r2` in the output comes from evaluating the
 printed model string; it is not carried over from any internal fitting
 stage.
 
+## Benchmarks
+
+Keplearn is a method in [SRBench](https://github.com/cavalab/srbench), the
+standard symbolic regression benchmark, added in
+[cavalab/srbench#223](https://github.com/cavalab/srbench/pull/223).
+
+These numbers come from SRBench's own containerized pipeline, graded by its
+sympy equivalence check, at one trial per dataset and a 60 second per-fit
+budget. Ground-truth symbolic solution rate by target noise:
+
+| suite | noise 0 | 0.001 | 0.01 | 0.1 |
+|---|---|---|---|---|
+| Feynman (116) | 75 (64.7%) | 65 (56.0%) | 51 (44.0%) | 10 (8.6%) |
+| Strogatz (14) | 6 (42.9%) | 6 (42.9%) | 3 (21.4%) | 1 (7.1%) |
+
+The highest published Feynman symbolic rate on SRBench is AIFeynman at
+55.8%, with the next group near 27%; Keplearn reaches 64.7% at a fraction of
+their compute budget.
+
+On the 138 black-box datasets, which have no closed-form ground truth, the
+median test R2 is near zero (about -0.003). Keplearn targets exact analytic
+laws rather than general curve fitting, and that result reflects the
+trade-off.
+
 ## License
 
 Keplearn is released under the MIT license.
