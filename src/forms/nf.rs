@@ -244,14 +244,29 @@ pub struct Expr {
     pub terms: Vec<Term>,
 }
 
-pub const SNAP_CONSTANTS: [f64; 4] = [
-    std::f64::consts::PI,
-    std::f64::consts::E,
-    std::f64::consts::SQRT_2,
-    1.732_050_807_568_877_2,
+pub const SNAP_FAMILIES: &[(f64, &str, &[f64])] = &[
+    (
+        std::f64::consts::PI,
+        "pi",
+        &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+    ),
+    (std::f64::consts::E, "e", &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]),
+    (
+        std::f64::consts::SQRT_2,
+        "sqrt(2)",
+        &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+    ),
+    (
+        1.732_050_807_568_877_2,
+        "sqrt(3)",
+        &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+    ),
+    (std::f64::consts::TAU, "2*pi", &[-0.5, 0.5]),
+    (std::f64::consts::LN_2, "log(2)", &[-1.0, 1.0]),
+    (std::f64::consts::LN_10, "log(10)", &[-1.0, 1.0]),
+    (0.577_215_664_901_532_9, "euler_gamma", &[1.0]),
+    (1.618_033_988_749_895, "(1 + sqrt(5))/2", &[-1.0, 1.0]),
 ];
-
-pub const SNAP_POWERS: [f64; 6] = [-2.0, -1.0, -0.5, 0.5, 1.0, 2.0];
 
 pub const SNAP_DENOMS: [usize; 6] = [1, 2, 3, 4, 6, 8];
 
@@ -268,9 +283,17 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
             return None;
         }
     }
-    let names = ["pi", "e", "sqrt(2)", "sqrt(3)"];
-    for (base, name) in SNAP_CONSTANTS.iter().zip(names) {
-        for k in [1.0, -1.0, 2.0, -2.0, 0.5, -0.5] {
+    let atom = |n: &str| -> String {
+        if n.chars().all(|c| c.is_ascii_alphanumeric() || c == '_')
+            || (n.ends_with(')') && !n.starts_with('(') && n.matches('(').count() == 1)
+        {
+            n.to_string()
+        } else {
+            format!("({})", n)
+        }
+    };
+    for &(base, name, powers) in SNAP_FAMILIES {
+        for &k in powers {
             let b = base.powf(k);
             for den in SNAP_DENOMS {
                 let num = (v / b * den as f64).round();
@@ -279,9 +302,9 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
                 }
                 let g = gcd(num.abs() as i64, den as i64);
                 let (p, q) = (num as i64 / g, den as i64 / g);
-                let pow = match k {
-                    x if x == 1.0 || x == -1.0 => name.to_string(),
-                    x if x == 2.0 || x == -2.0 => format!("{}**2", name),
+                let pow = match k.abs() {
+                    x if x == 1.0 => name.to_string(),
+                    x if x == 2.0 => format!("{}**2", atom(name)),
                     _ => match name {
                         "sqrt(2)" => "2**(1/4)".to_string(),
                         "sqrt(3)" => "3**(1/4)".to_string(),
@@ -293,14 +316,14 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
                 let text = if k > 0.0 {
                     match (pa, q) {
                         (1, 1) => pow,
-                        (_, 1) => format!("{}*{}", pa, pow),
-                        (1, _) => format!("{}/{}", pow, q),
-                        _ => format!("{}*{}/{}", pa, pow, q),
+                        (_, 1) => format!("{}*{}", pa, atom(&pow)),
+                        (1, _) => format!("{}/{}", atom(&pow), q),
+                        _ => format!("{}*{}/{}", pa, atom(&pow), q),
                     }
                 } else {
                     match q {
-                        1 => format!("{}/{}", pa, pow),
-                        _ => format!("{}/({}*{})", pa, q, pow),
+                        1 => format!("{}/{}", pa, atom(&pow)),
+                        _ => format!("{}/({}*{})", pa, q, atom(&pow)),
                     }
                 };
                 return Some(format!("{}{}", sign, text));

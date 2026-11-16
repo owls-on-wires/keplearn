@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.0.0, result schema `keplearn.result.v2`.
+Version 1.1.0, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -34,7 +34,11 @@ is a literal quote. Blank lines are ignored.
 - Every other column is a feature, in file order: the first feature is
   `x1` in the output, the second `x2`, and so on.
 - A feature column with no numeric value in any row (names, labels) is
-  dropped, with a warning. The remaining features keep their order.
+  dropped, with a warning. So is a feature with the same value on every
+  row: it cannot explain anything. The remaining features keep their
+  order.
+- A column with values beyond 1e150 gets a warning: their squares
+  overflow, and laws over them may not be found. Rescale such a column.
 - A duplicated column name produces a warning.
 
 **Rows.** A row is skipped, and counted in a warning, when it has a
@@ -52,8 +56,10 @@ column it chooses one rounding model, whichever more cells support:
   number of significant digits (a column of `0.24`, `1.9`, `84` is known
   to two significant digits, so `84` is known to 1).
 
-Trailing zeros count as written digits (`250` has three). The rounding
-model matters only to the verdicts (see [the rounding floor](#the-rounding-floor)).
+Trailing zeros after a decimal point are written digits (`2.50` has
+three). Trailing zeros of a whole number written without a point are not:
+`1250` is known to 10 and `300` to 100, while `1250.` and `1250.0` keep
+their written places. The rounding model matters only to the verdicts (see [the rounding floor](#the-rounding-floor)).
 
 **Rejected input** (exit status 1, see [messages](#messages-exit-status-and-determinism)):
 
@@ -66,6 +72,7 @@ model matters only to the verdicts (see [the rounding floor](#the-rounding-floor
 | a first row made of numbers that does not contain the target name | `the first row (...) holds numbers, not column names ...` |
 | no column named as the target | `target column '...' not found; columns are: ...` |
 | a target but no numeric feature column | `input has a target column but no numeric feature columns` |
+| every feature column constant | `every feature column has the same value on every row ...` |
 | every row skipped | `no usable data rows` |
 | more than 1 GiB | `input exceeds the 1024 MiB cap` |
 
@@ -80,7 +87,13 @@ status 0:
   answer is that value, verdict `exact`, `r2` null (r² is undefined for a
   constant), and a warning names the value;
 - fewer than 4 data rows: no answer, verdict `no law found`, and a
-  `reason` saying a law with one constant needs at least 4 rows.
+  `reason` saying a law needs at least 4 rows (6 if it has a fitted
+  constant).
+
+With 4 or 5 rows the table is searched, but only a law with no fitted
+constant (such as `m1*m2/r**2`) can be confirmed; a law with one constant
+is fitted with an offset and checked by leaving each row out, which takes
+6 rows. The `reason` says so when nothing is confirmed.
 
 A target that is negative on every row is searched as its negation and
 the answers are negated back; the output is in the target's own sign.
@@ -121,7 +134,7 @@ By default stdout holds exactly one JSON object and nothing else. With
 | field | type | meaning |
 |---|---|---|
 | `schema` | string | `"keplearn.result.v2"`; changes whenever a field changes |
-| `results` | array | the answers, best first, at most `--top-k` (see below) |
+| `results` | array | the answers, best first (see [ordering](#how-answers-are-ordered)), at most `--top-k` |
 | `verdict` | string | the first answer's verdict: `exact`, `approximate` or `no law found` |
 | `reason` | string or null | why the verdict is not `exact`; null when it is |
 | `stopped_by` | string | `exact_exit` (an exact answer ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) |
@@ -129,10 +142,12 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision data |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
 | `rows` | integer | data rows read (after skipped rows) |
-| `warnings` | array of strings | notes on the input: dropped columns, skipped rows, duplicate names, invalid UTF-8, a constant target |
+| `warnings` | array of strings | notes on the input (dropped or constant columns, skipped rows, duplicate names, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded) |
 | `time_ms` | integer | elapsed milliseconds; present only with `--timing` |
 
-`results` is empty only for a table too small to search.
+`results` is empty only for a table too small to search (fewer than 4
+rows). When nothing better is found, the one answer is the target's mean,
+with `r2` 0 and verdict `no law found`.
 
 ### An answer
 
@@ -142,7 +157,7 @@ null.
 | field | type | meaning |
 |---|---|---|
 | `model` | string | the law in `x1..xN`, constants written to 13 significant digits |
-| `symbolic` | string | `model` with snapped constants written by name (`2*pi`, `sqrt(2)/2`, `pi**2`) |
+| `symbolic` | string | `model` with snapped constants written by name (`2*pi`, `sqrt(2)/2`, `pi**2`, `1/sqrt(2*pi)`, `log(2)`, `euler_gamma`); `euler_gamma` is NumPy's `np.euler_gamma` |
 | `named` | string | `symbolic` in the table's column names (a name that is not a plain identifier is written in backticks) |
 | `verdict` | string | this answer's verdict |
 | `r2` | number or null | R² of `model` evaluated on every row; null for a constant target. Rows where the model is undefined are left out, and the answer scores −1 if that is more than a tenth of them |
@@ -196,13 +211,20 @@ All of these hold:
    R², or leave-one-out R²; see [scoring](#scoring)) is at least
    `1 − max(1e-9, 3 × rounding floor)`. On full-precision data that is
    R² ≥ 1 − 1e-9.
-2. **Every row fits, when the target spans orders of magnitude.** If the
+2. **No row misses by more than rounding can.** Rounding is bounded: a
+   value written to a place q is off by at most q/2. Every row's residual
+   must be within 1.5 times the error its cells' written digits can cause
+   through the answer (q_y/2 + Σ_j |∂f/∂x_j| q_xj/2, with the features'
+   part only when they are read as rounded, see
+   [the rounding floor](#the-rounding-floor)), plus 3e-4 standard
+   deviations of the target for full-precision cells.
+3. **Every row fits, when the target spans orders of magnitude.** If the
    target has one sign and its largest magnitude is at least 1000 times
    its smallest, R² is set by the largest values. The answer must also
    fit each row: the mean over rows of (residual² / tolerance) must be at
    most 1, where a row's tolerance is 3 times its rounding variance plus
    (1e-8 × the row's value)².
-3. **It is well conditioned.**
+4. **It is well conditioned.**
    - No term of any sum is smaller than 1e-9 of the sum.
    - No sum's terms exceed the sum itself by a factor of 1e6 (huge
      constants cancelling).
@@ -210,9 +232,9 @@ All of these hold:
      the rows (a range below 3% of its typical size, or 0.03 in absolute
      terms for `exp`, `sin` and `cos`). Over such a range the function is
      nearly linear and stands in for a simpler form.
-4. **It has rows to spare.** The table has at least (free constants + 3)
+5. **It has rows to spare.** The table has at least (free constants + 3)
    rows.
-5. **It is close to the best answer.** An answer below the first is exact
+6. **It is close to the best answer.** An answer below the first is exact
    only if its unexplained variance (1 − `r2`) is at most 3 times the
    first answer's, or 3e-9 if that is larger.
 
@@ -236,7 +258,8 @@ Neither of the above. The answer is still listed, and `reason` says which
 of these applies to the first answer:
 
 - the table is too small to check it by leaving one row out (the refit on
-  all rows but one needs its constants + 3 rows);
+  all rows but one needs its constants + 3 rows), or, below 6 rows, only
+  a law with no fitted constant could have been confirmed;
 - it has more constants than the rows can confirm (fewer than its
   constants + 3 rows);
 - it does not beat a constant by the margin above;
@@ -252,26 +275,42 @@ a row's error variance is
     q_y²/12 + Σ_j (∂f/∂x_j)² q_xj²/12
 
 with the derivatives taken numerically. The floor is the mean over the
-training rows, divided by the target's variance. Keplearn computes it
+training rows, divided by the target's variance.
+
+**Features as settings or as readings.** A round feature value (a length
+of 0.25 or 0.5, an angle of 0.1, an integer count) may be an exact setting
+or a coarse reading, and the digits alone cannot say which. Keplearn
+computes the floor both ways: with the target's precision only (features
+exact) and with the features' too. If the second is more than 100 times
+the first, the target was written far more precisely than the features'
+rounding would let anyone know it, so the features are read as exact
+settings and only the target's precision counts. Otherwise both columns
+are read as rounded as written. When an answer is exact only under that
+second reading, a warning says so. Keplearn computes it
 through each candidate whose R² on the target is within 0.01 of the best
 (at most 30 of them), and takes the smallest. It does this only when the
 best R² is at least 0.999; otherwise rounding is not what limits the fit,
 and the floor is 0. A floor below 1e-18 is reported as 0.
 
-A floor is an upper bound on the error from rounding. A column of whole
-numbers is read as rounded to 1. If those values were in fact exact
-settings, the floor is too generous, and several close forms can be
-exact at once. Rule 5 above keeps alternatives far worse than the first
-answer from being called exact.
+A floor is an upper bound on the error from rounding. When the features
+are read as rounded and are in fact exact settings, the floor is too
+generous and several close forms can be exact at once; the warning above
+flags this, and rule 6 keeps alternatives far worse than the first answer
+from being called exact.
 
 ### Free constants
 
 A constant is free when it was read off the data. These are not free:
 
 - integers and fractions p/q with |p| and q at most 12;
-- multiples p/q of π, e, √2 and √3, or of their squares, square roots
-  or reciprocals, with |p| at most 8 and q one of 1, 2, 3, 4, 6, 8 (the
-  forms `symbolic` writes by name).
+- multiples p/q, with |p| at most 8 and q one of 1, 2, 3, 4, 6, 8, of:
+  - π, e, √2 and √3, and their squares, square roots and reciprocals;
+  - √(2π) and 1/√(2π) (Gaussian normalisation);
+  - ln 2 and ln 10, and their reciprocals;
+  - the Euler–Mascheroni constant γ (written `euler_gamma`);
+  - the golden ratio φ and 1/φ (written `(1 + sqrt(5))/2`).
+
+  These are the forms `symbolic` writes by name.
 
 On an `exact` answer, `free_constants` counts only the free ones. On any
 other answer every constant counts, because snapping a constant on a fit
@@ -308,10 +347,16 @@ constant structural: a snapped 115 is still a free constant.
 
 ## How answers are ordered
 
-- Below 80 rows: exact answers first, by fewest free constants, then
-  fewest nodes; then the rest by description length (the expression
-  above, smallest first).
-- From 80 rows: by description length on the held-out rows.
+Answers are ordered by verdict: every `exact` answer first, then
+`approximate`, then `no law found`. Within a verdict:
+
+- below 80 rows: exact answers by fewest free constants, then fewest
+  nodes; the rest by description length (the expression above, smallest
+  first);
+- from 80 rows: by description length on the held-out rows.
+
+The verdicts are given to the first 3 × `--top-k` distinct candidates the
+search ranks highest, before this ordering.
 
 Answers that share a structure are listed once (the best).
 
@@ -390,6 +435,8 @@ and `--seed` has no effect. Two things break this:
   written. Values printed with spurious digits, such as `0.30000000000000004`,
   read as full precision. Values rounded to integers by the instrument
   rather than the writer read as rounded to 1.
+- **Magnitudes.** Values beyond about 1e150 overflow when squared; the
+  table is not rejected, but laws over such columns may not be found.
 - **Size.** Input over 1 GiB is rejected. The whole input is held in
   memory, and the search uses at most `--sample` training rows (500 by
   default).

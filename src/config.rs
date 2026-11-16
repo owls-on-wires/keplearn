@@ -143,6 +143,13 @@ pub(crate) const CONSTANTS: &[(&str, f64)] = &[
     ("e", std::f64::consts::E),                            // Euler's number
     ("sqrt2", std::f64::consts::SQRT_2),                   // rms / geometry
     ("sqrt3", 1.732_050_807_568_877_2),                    // hexagonal / geometry
+    ("1/sqrt(2pi)", 0.398_942_280_401_432_7),              // Gaussian normalisation
+    ("sqrt(2pi)", 2.506_628_274_631_000_5),                // Gaussian / Stirling
+    ("ln2", std::f64::consts::LN_2),                       // half-lives
+    ("1/ln2", std::f64::consts::LOG2_E),                   // bits per nat
+    ("ln10", std::f64::consts::LN_10),                     // decibels, decades
+    ("euler_gamma", 0.577_215_664_901_532_9),              // harmonic sums
+    ("golden_ratio", 1.618_033_988_749_895),               // Fibonacci growth
 ];
 /// Denominators tried for the rational multiple p/q of each CONSTANTS base.
 pub(crate) const SNAP_DENOMS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
@@ -370,3 +377,35 @@ pub(crate) const COND_CANCEL_MAX: f64 = 1e6;
 /// the share of a --timeout budget the search may use; the rest is for
 /// the answers' assembly (floor, canonical stage, scoring)
 pub(crate) const SEARCH_SHARE: f64 = 0.8;
+
+/// Rows below which nothing is searched: a law with one constant is fitted
+/// with an offset (fit_min_rows(2) rows) and checked by leaving each row out,
+/// one row more.
+pub(crate) fn min_law_rows() -> usize {
+    fit_min_rows(2) + 1
+}
+
+/// Magnitude beyond which a value's square overflows f64 (ingest warns).
+pub(crate) const OVERFLOW_ABS: f64 = 1e150;
+
+/// Candidates given a verdict before the answers are ordered by verdict:
+/// this many times --top-k (distinct structures, in search order).
+pub(crate) const VERDICT_POOL: usize = 3;
+
+/// Rounding's error bound per row (guard::within_rounding): a row may miss
+/// by this many times its propagated half-quanta (the derivative is
+/// linearized and numerical) ...
+pub(crate) const ROUND_BOUND_SLACK: f64 = 1.5;
+/// ... plus this many standard deviations of the target, the per-row
+/// counterpart of an exact r² of 1 − 1e-9 (whose rms residual is 3e-5 of
+/// one standard deviation) on full-precision cells.
+pub(crate) const ROUND_BOUND_FLOOR: f64 = 3e-4;
+
+/// The features are read as exact settings when the rounding floor with
+/// their written precision exceeds the target's own by this factor (the
+/// target is written about ten times more precisely in standard deviation).
+pub(crate) const FEATURE_EXACT_RATIO: f64 = 100.0;
+
+/// Depth-1 offset shells (log(y − b) and the like) given the basis
+/// terminal, on slots apart from BASIS_DEPTH1_CAP's.
+pub(crate) const OFFSET_BASIS_CAP: usize = 8;

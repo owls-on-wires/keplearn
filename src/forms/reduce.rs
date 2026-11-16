@@ -446,14 +446,14 @@ fn product_screen(sub: &[Vec<f64>], ys: &[f64], have: &[Term]) -> Vec<Term> {
             .filter(|(_, b)| b.0 >= 0.0)
             .map(|(j, b)| (b.0, b.1, j))
             .collect();
-        bu.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        bu.sort_by(|a, b| b.0.total_cmp(&a.0));
         let mut bm: Vec<(f32, usize, usize)> = best_m
             .iter()
             .enumerate()
             .filter(|(_, b)| b.0 >= 0.0)
             .map(|(i, b)| (b.0, i, b.1))
             .collect();
-        bm.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap());
+        bm.sort_by(|a, b| b.0.total_cmp(&a.0));
         for (i, j) in top
             .iter()
             .map(|t| (t.1, t.2))

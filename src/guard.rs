@@ -376,3 +376,39 @@ pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> 
     }
     true
 }
+
+pub(crate) fn within_rounding(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+) -> bool {
+    use crate::config::{ROUND_BOUND_FLOOR, ROUND_BOUND_SLACK};
+    let rows: Vec<usize> = (0..n).filter(|&i| target[i].is_finite()).collect();
+    if rows.len() < 2 {
+        return true;
+    }
+    let m = rows.iter().map(|&i| target[i]).sum::<f64>() / rows.len() as f64;
+    let sd =
+        (rows.iter().map(|&i| (target[i] - m).powi(2)).sum::<f64>() / rows.len() as f64).sqrt();
+    let Ok(ast) = crate::forms::ast::parse(model) else {
+        return false;
+    };
+    let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
+    let bound = QUANTA.with(|q| {
+        let q = q.borrow();
+        let mut ev = crate::Evaluator::new(2, n);
+        crate::math::rounding_bound_rows(model, features, &q.0, &q.1, n, &mut ev)
+    });
+    for &i in &rows {
+        let p = ast.eval(&cols, i);
+        if !p.is_finite() {
+            return false;
+        }
+        let b = bound.as_ref().map_or(0.0, |v| v[i].max(0.0));
+        if (target[i] - p).abs() > ROUND_BOUND_SLACK * b + ROUND_BOUND_FLOOR * sd {
+            return false;
+        }
+    }
+    true
+}

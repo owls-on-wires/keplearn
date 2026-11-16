@@ -135,6 +135,7 @@ pub(crate) fn symbolic_model(model: &str) -> String {
                 .ok()
                 .and_then(crate::forms::nf::symbolic_constant)
             {
+                Some(sym) if is_atomic(&sym) => out.push_str(&sym),
                 Some(sym) => out.push_str(&format!("({})", sym)),
                 None => out.push_str(&tok),
             }
@@ -144,6 +145,37 @@ pub(crate) fn symbolic_model(model: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn is_atomic(e: &str) -> bool {
+    if e.chars().all(|c| c.is_ascii_alphanumeric() || c == '_') {
+        return true;
+    }
+    let Some(open) = e.find('(') else {
+        return false;
+    };
+    if !e.ends_with(')')
+        || !e[..open]
+            .chars()
+            .all(|c| c.is_ascii_alphanumeric() || c == '_')
+        || open == 0
+    {
+        return false;
+    }
+    let mut depth = 0;
+    for (i, c) in e.char_indices().skip(open) {
+        match c {
+            '(' => depth += 1,
+            ')' => {
+                depth -= 1;
+                if depth == 0 && i + 1 != e.len() {
+                    return false;
+                }
+            }
+            _ => {}
+        }
+    }
+    true
 }
 
 pub(crate) fn named_model(model: &str, names: &[String]) -> String {
@@ -231,12 +263,17 @@ fn j10(x: Option<f64>) -> String {
 }
 
 impl ResultObj {
-    pub(crate) fn constant(v: f64, verdict: &'static str, free: Option<usize>) -> ResultObj {
+    pub(crate) fn constant(
+        v: f64,
+        verdict: &'static str,
+        free: Option<usize>,
+        r2: Option<f64>,
+    ) -> ResultObj {
         let c = tidy_number(v, 13);
         ResultObj {
             expr: c.clone(),
             model: c.clone(),
-            r2: None,
+            r2,
             search_r2: None,
             holdout_r2: None,
             scale: 1.0,

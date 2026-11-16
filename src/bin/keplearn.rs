@@ -71,10 +71,11 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
                 the raw form: model = scale*expr + offset, with xj in
                 expr meaning column columns[j-1] (0-based)
 
-  Below 80 rows, answers are ordered exact first (fewest free
-  constants, then shortest), then by description length; from 80 rows,
-  by description length on the held-out rows. Ranking uses the
-  validation score, so a lower answer can have the higher r2.
+  Answers are ordered by verdict (exact, approximate, no law found);
+  within a verdict, below 80 rows exact answers by fewest free constants
+  then shortest and the rest by description length, from 80 rows by
+  description length on the held-out rows. Ranking uses the validation
+  score, so a lower answer can have the higher r2.
 
 VERDICTS:
   exact         fits to the precision the cells are written to (to
@@ -87,16 +88,23 @@ VERDICTS:
                 too few rows to check the best fit; it is still listed
 
 EXIT STATUS:
-  0  a result was written (whatever its verdict)
-  1  the input could not be used (no data, no target column, not a
-     table, over 1 GiB) or the output could not be written
-  2  invalid command line
+  0    a result was written (whatever its verdict)
+  1    the input could not be used (no data, no target column, not a
+       table, over 1 GiB) or the output could not be written
+  2    invalid command line, or stdin is a terminal
+  101  internal error (please report it)
 
 NOTES:
   * Diagnostics and warnings go to stderr; stdout holds only the result.
   * With many columns, run subsets of 2-5 at a time: irrelevant columns
     drop out of the answer, but the search slows as they accumulate.
   * Output is deterministic; --seed has no effect.
+  * A table needs 4 rows to be searched; with 4 or 5 only a law with no
+    fitted constant can be confirmed, one with a constant needs 6.
+  * Round feature values (0.25, 0.5, integers) count as exact settings
+    when the target is written far more precisely; otherwise as rounded
+    readings, and a warning says when an exact verdict depends on that.
+  * docs/reference.md (in the release archive) documents every rule.
 
 AUTHOR:
   https://github.com/owls-on-wires

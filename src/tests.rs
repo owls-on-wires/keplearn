@@ -918,3 +918,105 @@ fn json_keys(obj: &str) -> Vec<String> {
     }
     keys
 }
+
+#[test]
+fn values_near_the_float_limit_do_not_crash() {
+    let t = "x,y\n1e308,1e308\n-1e308,-1e308\n2e307,2e307\n3,3\n4,4\n5,5\n";
+    let j = run_json(t);
+    assert!(j.get("verdict").is_some());
+    let w = format!("{:?}", j.get("warnings"));
+    assert!(w.contains("overflow"), "{}", w);
+}
+
+#[test]
+fn small_tables_say_what_their_rows_allow() {
+    let j = run_json("x,y\n1,2\n2,4\n3,6\n4,8\n");
+    let r = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(r.contains("no fitted constant") && r.contains('6'), "{}", r);
+    let t = "m,r,f\n1.5,2.5,0.24\n2.5,1.5,1.1111111111111\n3.5,0.5,14\n0.5,3.5,0.040816326530612\n4.5,4.5,0.22222222222222\n";
+    let mut cfg = test_cfg();
+    cfg.target_col = "f".to_string();
+    let j = crate::forms::json::parse(&run_text(t, cfg).unwrap()).unwrap();
+    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+}
+
+#[test]
+fn a_constant_feature_is_dropped() {
+    let mut s = 1u64;
+    let t: String = "x,c,y\n".to_string()
+        + &(0..20)
+            .map(|_| {
+                let x = 1.0 + 4.0 * lcg(&mut s);
+                format!("{},5,{}\n", x, x)
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    assert!(format!("{:?}", j.get("warnings")).contains("'c'"));
+    assert!(run_text("a,b,y\n1,2,3\n1,2,4\n1,2,5\n1,2,6\n", test_cfg())
+        .unwrap_err()
+        .contains("same value"));
+}
+
+#[test]
+fn round_feature_values_are_settings_when_the_target_is_precise() {
+    let mut t = String::from("theta,y\n");
+    for k in 1..=15 {
+        let th = k as f64 / 10.0;
+        t.push_str(&format!("{},{:.10}\n", th, th.sin()));
+    }
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!((m.as_str(), v.as_str()), ("sin(x1)", "exact"));
+    let mut t = String::from("L,y\n");
+    for l in [0.25, 0.5, 0.75, 1.0, 1.25, 1.5, 1.75, 2.0] {
+        t.push_str(&format!(
+            "{},{:.5}\n",
+            l,
+            2.0 * std::f64::consts::PI * (l / 9.81f64).sqrt()
+        ));
+    }
+    let (m, _, v) = top_and_verdict(&t);
+    assert!(v == "exact" && m.starts_with("2.006"), "{} ({})", m, v);
+    let t: String = "r,y\n".to_string()
+        + &(1..=6)
+            .map(|r| format!("{},{:.11}\n", r, std::f64::consts::PI * (r * r) as f64))
+            .collect::<String>();
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert!(
+        top.get("symbolic")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("pi"),
+        "{:?}",
+        top.get("symbolic")
+    );
+}
+
+#[test]
+fn exponential_with_an_offset_and_the_wider_constants() {
+    let t: String = "t,y\n".to_string()
+        + &(0..25)
+            .map(|k| {
+                let t = k as f64 * 10.0 / 24.0;
+                format!("{},{}\n", t, 3.0 * (-0.5 * t).exp() + 2.0)
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!((m.as_str(), v.as_str()), ("3*exp(-0.5*x1) + 2", "exact"));
+    for (v, want) in [
+        (0.398_942_280_401_432_7, "1/sqrt(2*pi)"),
+        (std::f64::consts::LN_2, "log(2)"),
+        (0.577_215_664_901_532_9, "euler_gamma"),
+        (2.0 * std::f64::consts::PI, "2*pi"),
+    ] {
+        assert_eq!(
+            crate::forms::nf::symbolic_constant(v).as_deref(),
+            Some(want)
+        );
+    }
+}

@@ -65,7 +65,11 @@ pub(crate) fn cell_sig(s: &str) -> usize {
         return 0;
     }
     let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
-    digits.trim_start_matches('0').len()
+    let digits = digits.trim_start_matches('0');
+    if !mant.contains('.') {
+        return digits.trim_end_matches('0').len().max(1);
+    }
+    digits.len()
 }
 
 pub(crate) fn cell_quantum(s: &str) -> f64 {
@@ -78,7 +82,13 @@ pub(crate) fn cell_quantum(s: &str) -> f64 {
         return 0.0;
     }
     let decimals = mant.find('.').map_or(0, |i| (mant.len() - i - 1) as i32);
-    10f64.powi(exp - decimals)
+    let zeros = if mant.contains('.') {
+        0
+    } else {
+        let t = mant.trim_start_matches('0');
+        (t.len() - t.trim_end_matches('0').len()) as i32
+    };
+    10f64.powi(exp - decimals + zeros)
 }
 
 fn printable(s: &str) -> String {
@@ -258,10 +268,49 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     if n_rows == 0 {
         return Err("no usable data rows".into());
     }
-    let names: Vec<String> = feat_idx
+    let mut names: Vec<String> = feat_idx
         .iter()
         .map(|&i| header[i].trim().to_string())
         .collect();
+    let mut j = 0;
+    while j < features.len() {
+        let c = &features[j];
+        if n_rows > 1 && c.iter().all(|v| *v == c[0]) {
+            warnings.push(format!(
+                "column '{}' has the same value ({}) on every row; it is dropped",
+                names[j],
+                crate::output::tidy_number(c[0], 13)
+            ));
+            features.remove(j);
+            q_features.remove(j);
+            s_features.remove(j);
+            names.remove(j);
+        } else {
+            j += 1;
+        }
+    }
+    if features.is_empty() {
+        return Err(
+            "every feature column has the same value on every row; nothing can explain the target"
+                .into(),
+        );
+    }
+    let n_cols = features.len();
+    let big = |v: &[f64]| v.iter().any(|x| x.abs() > OVERFLOW_ABS);
+    for (j, c) in features.iter().enumerate() {
+        if big(c) {
+            warnings.push(format!(
+                "column '{}' has values beyond {:e}, whose squares overflow; rescale it",
+                names[j], OVERFLOW_ABS
+            ));
+        }
+    }
+    if big(&target) {
+        warnings.push(format!(
+            "the target has values beyond {:e}, whose squares overflow; rescale it",
+            OVERFLOW_ABS
+        ));
+    }
     fn column_quanta(v: &[f64], q: &mut [f64], sig: &[usize]) {
         let n = q.iter().filter(|x| **x > 0.0).count();
         if n == 0 {
@@ -423,30 +472,35 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         let mut warnings = ingest_warnings.clone();
         let (results, verdict, reason) = match constant {
             Some(v) => {
-                warnings.push(format!(
-                    "the target is {} on every row; nothing to search",
-                    crate::output::tidy_number(v, 13)
-                ));
+                warnings
+                    .push(
+                        format!(
+                            "the target is {} on every row; nothing to search", crate
+                            ::output::tidy_number(v, 13)
+                        ),
+                    );
                 (
-                    vec![crate::output::ResultObj::constant(
-                        v,
-                        "exact",
-                        Some(usize::from(!crate::guard::structural_constant(v))),
-                    )],
+                    vec![
+                        crate ::output::ResultObj::constant(v, "exact",
+                        Some(usize::from(! crate ::guard::structural_constant(v))), None)
+                    ],
                     "exact",
                     None,
                 )
             }
-            None => (
-                Vec::new(),
-                "no law found",
-                Some(format!(
-                    "the table has {} data row{}; a law with a single constant needs at least {}",
-                    n_rows,
-                    if n_rows == 1 { "" } else { "s" },
-                    fit_min_rows(1)
-                )),
-            ),
+            None => {
+                (
+                    Vec::new(),
+                    "no law found",
+                    Some(
+                        format!(
+                            "the table has {} data row{}; a law needs at least {} (and {} if it has a fitted constant)",
+                            n_rows, if n_rows == 1 { "" } else { "s" }, fit_min_rows(1),
+                            min_law_rows()
+                        ),
+                    ),
+                )
+            }
         };
         let oj = crate::output::Envelope {
             results,
@@ -550,7 +604,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         if m >= OUTLIER_TRIM_MIN_M {
             let k = (m / OUTLIER_TRIM_DEN).max(OUTLIER_TRIM_MIN);
             let cut_idx = m - k;
-            mags.select_nth_unstable_by(cut_idx, |a, b| a.partial_cmp(b).unwrap_or(CmpOrd::Equal));
+            mags.select_nth_unstable_by(cut_idx, |a, b| a.total_cmp(b));
             let cutoff = mags[cut_idx];
             for (j, i) in (h_lo..h_hi).enumerate() {
                 if keep[j] && target[i].abs() >= cutoff {
@@ -860,11 +914,17 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 })
                 .map(|(i, ch)| (score(&ch.target), i))
                 .collect();
-            ranked.sort_by(|a, b| {
-                b.0.partial_cmp(&a.0)
-                    .unwrap_or(std::cmp::Ordering::Equal)
-                    .then(a.1.cmp(&b.1))
-            });
+            ranked.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            let mut offset: Vec<(f64, usize)> = children
+                .iter()
+                .enumerate()
+                .filter(|(_, ch)| matches!(ch.chain.last(), Some(Red::ShellAff { .. })))
+                .map(|(i, ch)| (score(&ch.target), i))
+                .collect();
+            offset.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+            for &(_, i) in offset.iter().take(OFFSET_BASIS_CAP) {
+                children[i].basis_ok = true;
+            }
             for ch in children.iter_mut() {
                 if matches!(ch.chain.last(), Some(Red::Shell { .. })) {
                     ch.basis_ok = true;
@@ -905,7 +965,8 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             finalists.push(c.clone());
         }
     }
-    let floor = {
+    let zero_qf: Vec<Vec<f64>> = q_features.iter().map(|c| vec![0.0; c.len()]).collect();
+    let (floor, features_exact, floor_with_features) = {
         let t: Vec<f64> = if negated {
             target[..train_n].iter().map(|v| -v).collect()
         } else {
@@ -924,31 +985,41 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             })
             .filter(|(r, _)| r.is_finite())
             .collect();
-        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CmpOrd::Equal));
+        scored.sort_by(|a, b| b.0.total_cmp(&a.0));
         let best_fit = scored.first().map_or(0.0, |s| s.0);
-        let f = scored
-            .iter()
-            .filter(|(r, _)| best_fit >= FLOOR_MIN_FIT && *r >= best_fit - FLOOR_FIT_SLACK)
-            .take(FLOOR_FINALISTS)
-            .map(|(_, m)| {
-                rounding_floor(
-                    m,
-                    &features,
-                    &t,
-                    &q_features,
-                    &q_target,
-                    train_n,
-                    &mut evaluator,
-                )
-            })
-            .filter(|f| *f > 0.0)
-            .fold(f64::INFINITY, f64::min);
-        if f.is_finite() && f > NOISE_FLOOR_MIN {
-            f
+        let mut floor_of = |qf: &[Vec<f64>]| -> f64 {
+            let f = scored
+                .iter()
+                .filter(|(r, _)| best_fit >= FLOOR_MIN_FIT && *r >= best_fit - FLOOR_FIT_SLACK)
+                .take(FLOOR_FINALISTS)
+                .map(|(_, m)| {
+                    rounding_floor(m, &features, &t, qf, &q_target, train_n, &mut evaluator)
+                })
+                .filter(|f| *f > 0.0)
+                .fold(f64::INFINITY, f64::min);
+            if f.is_finite() && f > NOISE_FLOOR_MIN {
+                f
+            } else {
+                0.0
+            }
+        };
+        let ft = floor_of(&zero_qf);
+        let ff = floor_of(&q_features);
+        if ff <= ft || ff > FEATURE_EXACT_RATIO * ft {
+            (ft, true, ft)
         } else {
-            0.0
+            (ff, false, ft)
         }
     };
+    let floor_settings = floor_with_features;
+    crate::guard::set_quanta(
+        if features_exact {
+            &zero_qf
+        } else {
+            &q_features
+        },
+        &q_target,
+    );
     crate::guard::set_floor(floor);
     if crate::output::verbose() {
         eprintln!("stage floor: {} ms", t0.elapsed().as_millis());
@@ -973,11 +1044,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         arm_deadline_at(
             (timeout_ms > 0).then(|| t0 + std::time::Duration::from_millis(timeout_ms)),
         );
-        finalists.sort_by(|a, b| {
-            a.nodes
-                .cmp(&b.nodes)
-                .then(b.gate_r2.partial_cmp(&a.gate_r2).unwrap_or(CmpOrd::Equal))
-        });
+        finalists.sort_by(|a, b| a.nodes.cmp(&b.nodes).then(b.gate_r2.total_cmp(&a.gate_r2)));
         for mut c in finalists.drain(..) {
             if !kept.is_empty() && out_of_time() {
                 dropped += 1;
@@ -1089,6 +1156,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
     }
     let law_shaped = |model: &str| {
         crate::guard::fits_each_row(model, &features, &target, n_rows)
+            && crate::guard::within_rounding(model, &features, &target, n_rows)
             && crate::guard::well_conditioned(model, &features, n_rows)
     };
     if crate::output::verbose() {
@@ -1109,7 +1177,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             _ => None,
         })
         .collect();
-    let abstain = !dl.iter().any(|d| d.is_some()) && (hold_n > 0 || !finalists.is_empty());
+    let abstain = !dl.iter().any(|d| d.is_some()) || finalists.is_empty();
     let train_mean = {
         let (mut s, mut c) = (0.0f64, 0usize);
         for k in 0..train_n {
@@ -1131,13 +1199,12 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         (Some(_), None) => CmpOrd::Less,
         (None, Some(_)) => CmpOrd::Greater,
         (None, None) => match (dl[a], dl[b]) {
-            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(CmpOrd::Equal).then(a.cmp(&b)),
+            (Some(x), Some(y)) => x.total_cmp(&y).then(a.cmp(&b)),
             (Some(_), None) => CmpOrd::Less,
             (None, Some(_)) => CmpOrd::Greater,
             (None, None) => finalists[b]
                 .gate_r2
-                .partial_cmp(&finalists[a].gate_r2)
-                .unwrap_or(CmpOrd::Equal)
+                .total_cmp(&finalists[a].gate_r2)
                 .then(finalists[a].nodes.cmp(&finalists[b].nodes))
                 .then(a.cmp(&b)),
         },
@@ -1207,8 +1274,14 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             train_mean,
             "no law found",
             Some(1),
+            Some(0.0),
         ));
-        top_reason = Some(if finalists.is_empty() {
+        top_reason = Some(if train_n < min_law_rows() {
+            format!(
+                    "with {} rows only a law with no fitted constant can be confirmed, and none was found; one with a constant takes at least {} rows",
+                    train_n, min_law_rows()
+                )
+        } else if finalists.is_empty() {
             "the search found no candidate form".to_string()
         } else {
             format!("no candidate could be scored on {} rows", n_rows_in)
@@ -1216,9 +1289,22 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
     } else {
         let identity_cols: Vec<usize> = (0..n_cols).collect();
         let mut seen_struct: std::collections::HashSet<String> = std::collections::HashSet::new();
-        let mut top_resid = f64::INFINITY;
+        struct Entry {
+            ci: usize,
+            canon: Option<String>,
+            d: Option<f64>,
+            resid: f64,
+            v: &'static str,
+            why: Option<String>,
+        }
+        let rank = |v: &str| match v {
+            "exact" => 0,
+            "approximate" => 1,
+            _ => 2,
+        };
+        let mut pool: Vec<Entry> = Vec::new();
         for &ci in order.iter() {
-            if results.len() >= top_k {
+            if pool.len() >= VERDICT_POOL * top_k {
                 break;
             }
             let c = &finalists[ci];
@@ -1228,7 +1314,6 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                     continue;
                 }
             }
-            let i = results.len();
             if out_r2[ci].is_none() {
                 out_r2[ci] = Some(full_model_r2(&c.model, &features, &target, &mut evaluator));
                 if hold_n > 0 {
@@ -1247,12 +1332,6 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                     out_ho[ci] = loo[ci];
                 }
             }
-            let (out_expr, out_cols, out_scale, out_offset): (&str, &[usize], f64, f64) =
-                if c.root_raw {
-                    (&c.expr, &c.columns, c.scale, c.offset)
-                } else {
-                    (&c.model, &identity_cols, 1.0, 0.0)
-                };
             let mut why: Option<String> = None;
             let (score, d) = if hold_n == 0 {
                 match fixed_r2(&c.model, &mut evaluator).or_else(|| {
@@ -1282,10 +1361,8 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             } else {
                 (out_ho[ci], dl[ci])
             };
-            let resid = 1.0 - out_r2[ci].unwrap_or(-1.0);
-            let near_top = i == 0 || resid <= NOISE_FLOOR_K * top_resid.max(1.0 - EXACT_EXIT_R2);
             let v = match verdict_of(score, d) {
-                "exact" if !near_top || !law_shaped(&c.model) => {
+                "exact" if !law_shaped(&c.model) => {
                     if d.is_some_and(|d| d < -dl_margin) {
                         "approximate"
                     } else {
@@ -1294,9 +1371,6 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
                 v => v,
             };
-            if i == 0 {
-                top_resid = resid;
-            }
             let free = if v == "exact" {
                 crate::guard::free_constants(&c.model)
             } else {
@@ -1314,41 +1388,80 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
                 _ => v,
             };
-            if why.is_none() {
-                why = match v {
-                    "approximate" => {
-                        Some(
-                            "the best fit leaves residuals above the precision the cells are written to"
-                                .to_string(),
-                        )
-                    }
-                    "no law found" => {
-                        Some(
-                            format!(
-                                "the best fit (r2 = {:.4}) does not beat a constant by enough to be a law",
-                                out_r2[ci].unwrap_or(- 1.0)
-                            ),
-                        )
-                    }
-                    _ => None,
-                };
+            pool.push(Entry {
+                ci,
+                canon,
+                d,
+                resid: 1.0 - out_r2[ci].unwrap_or(-1.0),
+                v,
+                why,
+            });
+        }
+        pool.sort_by_key(|e| rank(e.v));
+        if let Some(top_resid) = pool.first().map(|e| e.resid) {
+            for e in pool.iter_mut().skip(1) {
+                if e.v == "exact" && e.resid > NOISE_FLOOR_K * top_resid.max(1.0 - EXACT_EXIT_R2) {
+                    e.v = if e.d.is_some_and(|d| d < -dl_margin) {
+                        "approximate"
+                    } else {
+                        "no law found"
+                    };
+                }
             }
+        }
+        pool.sort_by_key(|e| rank(e.v));
+        pool.truncate(top_k);
+        for (i, e) in pool.into_iter().enumerate() {
+            let c = &finalists[e.ci];
+            let (out_expr, out_cols, out_scale, out_offset): (&str, &[usize], f64, f64) =
+                if c.root_raw {
+                    (&c.expr, &c.columns, c.scale, c.offset)
+                } else {
+                    (&c.model, &identity_cols, 1.0, 0.0)
+                };
+            let v = e.v;
+            let free = if v == "exact" {
+                crate::guard::free_constants(&c.model)
+            } else {
+                crate::guard::all_constants(&c.model)
+            };
+            let why = e.why.or_else(|| match v {
+                "approximate" => Some(
+                    "the best fit leaves residuals above the precision the cells are written to"
+                        .to_string(),
+                ),
+                "no law found" => Some(format!(
+                    "the best fit (r2 = {:.4}) does not beat a constant by enough to be a law",
+                    out_r2[e.ci].unwrap_or(-1.0)
+                )),
+                _ => None,
+            });
+            let why = if v == "no law found" && train_n < min_law_rows() && free.unwrap_or(1) > 0 {
+                Some(
+                    format!(
+                        "with {} rows only a law with no fitted constant can be confirmed; one with a constant takes at least {} rows",
+                        train_n, min_law_rows()
+                    ),
+                )
+            } else {
+                why
+            };
             if i == 0 {
                 top_verdict = v;
-                top_reason = why;
+                top_reason = if v == "exact" { None } else { why };
             }
             let sym = crate::output::symbolic_model(&c.model);
             results.push(crate::output::ResultObj {
                 expr: out_expr.to_string(),
                 model: c.model.clone(),
-                r2: out_r2[ci],
+                r2: out_r2[e.ci],
                 search_r2: Some(c.fit_r2),
-                holdout_r2: out_ho[ci],
+                holdout_r2: out_ho[e.ci],
                 scale: out_scale,
                 offset: out_offset,
                 columns: out_cols.to_vec(),
                 uses: crate::output::used_columns(&c.model, &names),
-                structure: canon.clone(),
+                structure: e.canon,
                 canonical: Some(c.model.clone()),
                 verdict: v,
                 named: crate::output::named_model(&sym, &names),
@@ -1367,6 +1480,23 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
     } else {
         "frontier_exhausted"
     };
+    let mut warnings = ingest_warnings.clone();
+    let exact_as_settings = results.first().is_some_and(|r| {
+        let fits = r
+            .r2
+            .is_some_and(|r2| r2 >= 1.0 - NOISE_FLOOR_K * floor_settings.max(1.0 - EXACT_EXIT_R2));
+        fits && {
+            crate::guard::set_quanta(&zero_qf, &q_target);
+            crate::guard::within_rounding(&r.model, &features, &target, n_rows)
+        }
+    });
+    if top_verdict == "exact" && !features_exact && !exact_as_settings {
+        warnings
+            .push(
+                "the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly"
+                    .to_string(),
+            );
+    }
     let oj = crate::output::Envelope {
         results,
         verdict: top_verdict,
@@ -1381,7 +1511,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         target: &target_col,
         columns: &names,
         rows: n_rows_in,
-        warnings: &ingest_warnings,
+        warnings: &warnings,
         time_ms: timing.then(|| elapsed.as_millis()),
     }
     .json();
@@ -1412,8 +1542,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             dorder.sort_by(|&a, &b| {
                 finalists[b]
                     .fit_r2
-                    .partial_cmp(&finalists[a].fit_r2)
-                    .unwrap_or(CmpOrd::Equal)
+                    .total_cmp(&finalists[a].fit_r2)
                     .then(a.cmp(&b))
             });
             dorder.truncate(DUMP_CANDIDATES_CAP);
@@ -1454,8 +1583,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             rows[a]
                 .final_score
                 .unwrap()
-                .partial_cmp(&rows[b].final_score.unwrap())
-                .unwrap_or(CmpOrd::Equal)
+                .total_cmp(&rows[b].final_score.unwrap())
                 .then(dorder[a].cmp(&dorder[b]))
         });
         let mut final_rank: Vec<Option<usize>> = vec![None; rows.len()];

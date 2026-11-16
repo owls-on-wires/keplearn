@@ -48,7 +48,7 @@ pub(crate) fn masked_divide(
     }
     let eps = if scratch.len() >= 8 {
         let mid = scratch.len() / 2;
-        scratch.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap_or(CmpOrd::Equal));
+        scratch.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
         (scratch[mid] * 1e-6).max(1e-10)
     } else {
         1e-10
@@ -149,6 +149,30 @@ pub(crate) fn rounding_var_rows(
     n: usize,
     ev: &mut Evaluator,
 ) -> Option<Vec<f64>> {
+    rounding_rows(model, features, q_features, q_target, n, ev)
+        .map(|r| r.into_iter().map(|(v, _)| v).collect())
+}
+
+pub(crate) fn rounding_bound_rows(
+    model: &str,
+    features: &[Vec<f64>],
+    q_features: &[Vec<f64>],
+    q_target: &[f64],
+    n: usize,
+    ev: &mut Evaluator,
+) -> Option<Vec<f64>> {
+    rounding_rows(model, features, q_features, q_target, n, ev)
+        .map(|r| r.into_iter().map(|(_, b)| b).collect())
+}
+
+fn rounding_rows(
+    model: &str,
+    features: &[Vec<f64>],
+    q_features: &[Vec<f64>],
+    q_target: &[f64],
+    n: usize,
+    ev: &mut Evaluator,
+) -> Option<Vec<(f64, f64)>> {
     let parsed = Parser::parse(model).ok()?;
     if parsed.arity() > features.len() || n < 2 || q_target.len() < n {
         return None;
@@ -156,8 +180,10 @@ pub(crate) fn rounding_var_rows(
     let compiled = compile(&parsed);
     ev.ensure_capacity(compiled.max_stack.max(2), n);
     let mut var = vec![0.0f64; n];
+    let mut bound = vec![0.0f64; n];
     for i in 0..n {
         var[i] = q_target[i] * q_target[i] / 12.0;
+        bound[i] = q_target[i] / 2.0;
     }
     for j in 0..features.len().min(q_features.len()) {
         if q_features[j].iter().take(n).all(|q| *q == 0.0) {
@@ -180,10 +206,11 @@ pub(crate) fn rounding_var_rows(
             let d = (pu[i] - pd[i]) / (2.0 * h[i]);
             if d.is_finite() {
                 var[i] += d * d * q_features[j][i] * q_features[j][i] / 12.0;
+                bound[i] += d.abs() * q_features[j][i] / 2.0;
             }
         }
     }
-    Some(var)
+    Some(var.into_iter().zip(bound).collect())
 }
 
 pub(crate) fn mdl_dl(hn_f: f64, rh: f64, nodes: f64) -> f64 {
@@ -206,10 +233,10 @@ pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64, f64) {
     }
     let mut mags: Vec<f64> = resid.iter().map(|x| x.0).collect();
     let mid = mags.len() / 2;
-    mags.select_nth_unstable_by(mid, |a, b| a.partial_cmp(b).unwrap_or(CmpOrd::Equal));
+    mags.select_nth_unstable_by(mid, |a, b| a.total_cmp(b));
     let thresh = POLE_RESID_MULT * mags[mid].max(1e-300);
     let kmax = (m / OUTLIER_TRIM_DEN).max(OUTLIER_TRIM_MIN);
-    resid.sort_unstable_by(|x, y| y.0.partial_cmp(&x.0).unwrap_or(CmpOrd::Equal));
+    resid.sort_unstable_by(|x, y| y.0.total_cmp(&x.0));
     let mut ndrop = 0usize;
     while ndrop < kmax && ndrop < m && resid[ndrop].0 > thresh {
         ndrop += 1;

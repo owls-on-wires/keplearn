@@ -22,9 +22,9 @@ recursive reduction.
   short text report
 - Says how far to trust each answer: exact, approximate, or no law found,
   judged against the precision the data is written to
-- Handles small tables (a law with one constant from 6 rows) and rounded
-  data; noise beyond the data's written precision is reported as an
-  approximate fit, not an exact law
+- Handles small tables (a law with one constant from 6 rows, one with none
+  from 4) and rounded data; noise beyond the data's written precision is
+  reported as an approximate fit, not an exact law
 - Single binary, zero dependencies (fully static with the musl target)
 - Deterministic; the same input produces the same output, byte for byte
 - The reported `r2` is computed from the printed equation itself
@@ -38,7 +38,8 @@ Full documentation: [docs/reference.md](docs/reference.md).
 [![Linux](https://img.shields.io/badge/Linux-x86__64-2ea44f?style=for-the-badge&logo=linux&logoColor=white)](https://github.com/owls-on-wires/keplearn/releases/latest/download/keplearn-linux-x86_64.tar.gz)
 
 Each download is an archive holding one folder with the `keplearn` binary,
-this README, the LICENSE and the [documentation](docs/reference.md).
+this README, the CHANGELOG, the LICENSE, the
+[documentation](docs/reference.md) and the [example tables](examples).
 
 **macOS** (universal: Apple Silicon and Intel)
 
@@ -72,13 +73,15 @@ cd keplearn-linux-x86_64
 Name the column to predict with `--target` (the default is a column called
 `target`) and pipe in a TSV or CSV with a header row. The delimiter comes
 from the header: tab if present, else comma. Every other numeric column is
-a candidate variable; text columns are dropped with a warning.
+a candidate variable; text columns are dropped with a warning. The tables
+used below are in [`examples/`](examples), in the repository and in every
+release archive.
 
 ```sh
-$ ./keplearn --target force --format summary < gravity.tsv
+$ ./keplearn --target force --format summary < examples/gravity.tsv
 force = m1*m2/r**2                                exact (r2 = 1.0000, 60 rows)
 constants: none free
-data: 60 rows, 3 columns; rounding floor 9.9e-7 of the target's variance
+data: 60 rows, 3 columns; rounding floor 4.4e-12 of the target's variance
 ```
 
 The summary states a verdict for the answer:
@@ -94,30 +97,38 @@ The summary states a verdict for the answer:
 
 Rounded data is handled by its written precision. Kepler's planets typed to
 two significant digits still give the law, and the verdict accounts for the
-rounding:
+rounding of both columns:
 
 ```sh
-$ ./keplearn --target T_years --format summary < planets_2_digits.tsv
+$ ./keplearn --target T_years --format summary < examples/planets_2_digits.tsv
 T_years = a_AU**(3/2)                             exact (r2 = 0.9990, 9 rows)
 constants: none free
 data: 9 rows, 1 column; rounding floor 5.3e-4 of the target's variance
+next best: T_years = (3/sqrt(2))*a_AU + 0.11*a_AU**2    approximate
+note: the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly
 ```
 
-and noisy data is never called exact:
+The note says the verdict rests on reading the distances as rounded to two
+digits. Round feature values can also be exact settings (lengths of 0.25
+and 0.5 m); Keplearn reads them that way when the target is written far more
+precisely, so a pendulum timed to five digits keeps its 2.006 instead of
+rounding it to 2.
+
+Noise beyond the data's written precision is reported as approximate:
 
 ```sh
-$ ./keplearn --target P_kPa --format summary < gas_1pct_noise.tsv
-P_kPa = 8.33333333333*T_K/V_L                     approximate (r2 = 0.9990, 441 rows)
+$ ./keplearn --target P_kPa --format summary < examples/gas_1pct_noise.tsv
+P_kPa = 8.3*T_K/V_L                               approximate (r2 = 0.9992, 441 rows)
 constants: 1 free
 why not exact: the best fit leaves residuals above the precision the cells are written to
-data: 441 rows, 2 columns; rounding floor 3.8e-7 of the target's variance
+data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
 ```
 
 The default output is one JSON object (schema `keplearn.result.v2`), the
 same for the same input, byte for byte:
 
 ```sh
-$ ./keplearn --target force --top-k 1 --pretty < gravity.tsv
+$ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
 {
   "schema": "keplearn.result.v2",
   "results": [
@@ -126,7 +137,7 @@ $ ./keplearn --target force --top-k 1 --pretty < gravity.tsv
       "model": "x1*x2/x3**2",
       "r2": 1.0000000000,
       "search_r2": 1.0000000000,
-      "holdout_r2": 0.9999999999934012,
+      "holdout_r2": 0.9999999999941845,
       "scale": 1,
       "offset": 0,
       "columns": [0, 1, 2],
@@ -144,7 +155,7 @@ $ ./keplearn --target force --top-k 1 --pretty < gravity.tsv
   "reason": null,
   "stopped_by": "frontier_exhausted",
   "validation": "leave-one-out",
-  "noise_floor": 9.909047392326821e-7,
+  "noise_floor": 4.408011385397939e-12,
   "names": {"target": "force", "columns": ["m1", "m2", "r"]},
   "rows": 60,
   "warnings": []

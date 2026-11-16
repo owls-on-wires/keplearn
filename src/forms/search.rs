@@ -22,8 +22,8 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             }
         }
     }
-    for base in crate::forms::nf::SNAP_CONSTANTS {
-        for k in crate::forms::nf::SNAP_POWERS {
+    for &(base, _, powers) in crate::forms::nf::SNAP_FAMILIES {
+        for &k in powers {
             let b = base.powf(k);
             for den in crate::forms::nf::SNAP_DENOMS {
                 let num = (v / b * den as f64).round();
@@ -38,11 +38,7 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             }
         }
     }
-    out.sort_by(|a, b| {
-        a.0.cmp(&b.0)
-            .then(a.1.cmp(&b.1))
-            .then(a.2.partial_cmp(&b.2).unwrap())
-    });
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2)));
     let mut vals: Vec<f64> = Vec::new();
     for (_, _, _, c) in out {
         if !vals.iter().any(|x| *x == c) {
@@ -122,8 +118,7 @@ fn coef_for_offset(t: &[Vec<f64>], y: &[f64], offset: f64) -> Option<Vec<f64>> {
         let piv = (col..k).max_by(|&p, &q| {
             a[p * (k + 1) + col]
                 .abs()
-                .partial_cmp(&a[q * (k + 1) + col].abs())
-                .unwrap()
+                .total_cmp(&a[q * (k + 1) + col].abs())
         })?;
         if a[piv * (k + 1) + col].abs() < 1e-300 {
             return None;

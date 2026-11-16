@@ -62,7 +62,6 @@ pub(crate) fn pursue_masked(
     min_terms: usize,
     allowed: Option<&[bool]>,
 ) -> Option<Vec<usize>> {
-    let ok = |k: usize| allowed.map_or(true, |a| a[k]);
     let n = y.len();
     let na = p.atoms.len();
     if na == 0 || na > 4000 {
@@ -72,13 +71,16 @@ pub(crate) fn pursue_masked(
     let ym = y.iter().sum::<f64>() / n as f64;
     let yc: Vec<f64> = y.iter().map(|v| v - ym).collect();
     let yy: f64 = yc.iter().map(|v| v * v).sum();
-    if !(yy > 0.0) {
+    if !(yy > 0.0 && yy.is_finite()) {
         return None;
     }
     let cy: Vec<f64> = ac
         .iter()
         .map(|a| a.iter().zip(&yc).map(|(p, q)| p * q).sum())
         .collect();
+    let ok = |k: usize| {
+        allowed.map_or(true, |a| a[k]) && gram[k * na + k].is_finite() && cy[k].is_finite()
+    };
     let rel = |set: &[usize]| -> f64 {
         let k = set.len();
         let mut buf = [0.0f64; 90];
@@ -100,8 +102,7 @@ pub(crate) fn pursue_masked(
                 .max_by(|&a, &b| {
                     m[a * (k + 1) + col]
                         .abs()
-                        .partial_cmp(&m[b * (k + 1) + col].abs())
-                        .unwrap()
+                        .total_cmp(&m[b * (k + 1) + col].abs())
                 })
                 .unwrap();
             if m[piv * (k + 1) + col].abs() < 1e-14 {
@@ -165,8 +166,7 @@ pub(crate) fn pursue_masked(
             let piv = (col..k).max_by(|&x, &y| {
                 a[x * 2 * k + col]
                     .abs()
-                    .partial_cmp(&a[y * 2 * k + col].abs())
-                    .unwrap()
+                    .total_cmp(&a[y * 2 * k + col].abs())
             })?;
             if a[piv * 2 * k + col].abs() < 1e-14 {
                 return None;
@@ -225,14 +225,14 @@ pub(crate) fn pursue_masked(
         ((yy - fit_r - num * num / d) / yy).max(0.0)
     };
     let mut singles: Vec<(f64, usize)> = (0..na).filter(|&k| ok(k)).map(|k| (rel1(k), k)).collect();
-    singles.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+    singles.sort_by(|a, b| a.0.total_cmp(&b.0));
     let mut pairs: Vec<(f64, usize, usize)> = Vec::new();
     for i in (0..na).filter(|&i| ok(i)) {
         for j in ((i + 1)..na).filter(|&j| ok(j)) {
             let e = rel2(i, j);
             if pairs.len() < 16 || e < pairs[pairs.len() - 1].0 {
                 pairs.push((e, i, j));
-                pairs.sort_by(|a, b| a.0.partial_cmp(&b.0).unwrap());
+                pairs.sort_by(|a, b| a.0.total_cmp(&b.0));
                 pairs.truncate(16);
             }
         }

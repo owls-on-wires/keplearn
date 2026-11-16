@@ -594,12 +594,7 @@ pub(crate) fn expand_children(
             basis_forced =
                 basis_finalist(t, features, n_cols, sample_n, &node.chain, node.product_ok);
         }
-        pps.sort_by(|a, b| {
-            b.corr
-                .partial_cmp(&a.corr)
-                .unwrap_or(CmpOrd::Equal)
-                .then(a.key.cmp(&b.key))
-        });
+        pps.sort_by(|a, b| b.corr.total_cmp(&a.corr).then(a.key.cmp(&b.key)));
         let room = MAX_VCOLS - node.vcols.len();
         pps.truncate(room);
         let has_forced = !basis_forced.is_empty();
@@ -622,7 +617,7 @@ pub(crate) fn expand_children(
             } else if node.depth == 1
                 && matches!(
                     node.chain.last(),
-                    Some(Red::Shell { .. }) | Some(Red::Div { .. })
+                    Some(Red::Shell { .. }) | Some(Red::ShellAff { .. }) | Some(Red::Div { .. })
                 )
             {
                 if has_forced {
@@ -660,7 +655,7 @@ pub(crate) fn expand_children(
     protos.sort_by(|a, b| {
         b.plane
             .cmp(&a.plane)
-            .then(b.priority.partial_cmp(&a.priority).unwrap_or(CmpOrd::Equal))
+            .then(b.priority.total_cmp(&a.priority))
             .then(a.cost.cmp(&b.cost))
             .then(a.order.cmp(&b.order))
     });
