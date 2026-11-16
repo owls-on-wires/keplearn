@@ -244,29 +244,44 @@ pub struct Expr {
     pub terms: Vec<Term>,
 }
 
-pub const SNAP_FAMILIES: &[(f64, &str, &[f64])] = &[
+pub const SNAP_FAMILIES: &[(f64, &str, &[f64], bool)] = &[
     (
         std::f64::consts::PI,
         "pi",
         &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+        true,
     ),
-    (std::f64::consts::E, "e", &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0]),
+    (
+        std::f64::consts::E,
+        "e",
+        &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+        true,
+    ),
     (
         std::f64::consts::SQRT_2,
         "sqrt(2)",
         &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+        true,
     ),
     (
         1.732_050_807_568_877_2,
         "sqrt(3)",
         &[-2.0, -1.0, -0.5, 0.5, 1.0, 2.0],
+        true,
     ),
-    (std::f64::consts::TAU, "2*pi", &[-0.5, 0.5]),
-    (std::f64::consts::LN_2, "log(2)", &[-1.0, 1.0]),
-    (std::f64::consts::LN_10, "log(10)", &[-1.0, 1.0]),
-    (0.577_215_664_901_532_9, "euler_gamma", &[1.0]),
-    (1.618_033_988_749_895, "(1 + sqrt(5))/2", &[-1.0, 1.0]),
+    (std::f64::consts::TAU, "2*pi", &[-0.5, 0.5], false),
+    (std::f64::consts::LN_2, "log(2)", &[-1.0, 1.0], false),
+    (std::f64::consts::LN_10, "log(10)", &[-1.0, 1.0], false),
+    (0.577_215_664_901_532_9, "euler_gamma", &[1.0], false),
+    (
+        1.618_033_988_749_895,
+        "(1 + sqrt(5))/2",
+        &[-1.0, 1.0],
+        false,
+    ),
 ];
+
+pub const SNAP_FEW_MULTS: &[(f64, usize)] = &[(1.0, 1), (2.0, 1), (1.0, 2)];
 
 pub const SNAP_DENOMS: [usize; 6] = [1, 2, 3, 4, 6, 8];
 
@@ -292,12 +307,19 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
             format!("({})", n)
         }
     };
-    for &(base, name, powers) in SNAP_FAMILIES {
+    for &(base, name, powers, full) in SNAP_FAMILIES {
         for &k in powers {
             let b = base.powf(k);
             for den in SNAP_DENOMS {
                 let num = (v / b * den as f64).round();
                 if num == 0.0 || num.abs() > SNAP_MULT_MAX || !close(num / den as f64 * b) {
+                    continue;
+                }
+                if !full
+                    && !SNAP_FEW_MULTS
+                        .iter()
+                        .any(|&(p, q)| p == num.abs() && q == den)
+                {
                     continue;
                 }
                 let g = gcd(num.abs() as i64, den as i64);

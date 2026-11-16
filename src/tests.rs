@@ -932,6 +932,13 @@ fn values_near_the_float_limit_do_not_crash() {
 fn small_tables_say_what_their_rows_allow() {
     let j = run_json("x,y\n1,2\n2,4\n3,6\n4,8\n");
     let r = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        r.contains("4 data rows") && r.contains("at least 5"),
+        "{}",
+        r
+    );
+    let j = run_json("x,y\n1,2\n2,4\n3,6\n4,8\n5,10\n");
+    let r = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
     assert!(r.contains("no fitted constant") && r.contains('6'), "{}", r);
     let t = "m,r,f\n1.5,2.5,0.24\n2.5,1.5,1.1111111111111\n3.5,0.5,14\n0.5,3.5,0.040816326530612\n4.5,4.5,0.22222222222222\n";
     let mut cfg = test_cfg();
@@ -1019,4 +1026,133 @@ fn exponential_with_an_offset_and_the_wider_constants() {
             Some(want)
         );
     }
+    assert_eq!(
+        crate::forms::nf::symbolic_constant(7.0 * std::f64::consts::LN_10 / 8.0),
+        None
+    );
+    assert_eq!(
+        crate::forms::nf::symbolic_constant(2.0 * std::f64::consts::LN_2).as_deref(),
+        Some("2*log(2)")
+    );
+}
+
+#[test]
+fn five_rows_confirm_a_law_without_constants() {
+    let t = "m1,m2,r,y\n1.5,2.5,0.5,15\n2.5,1.5,1.5,1.6666666666667\n3.5,0.5,2.5,0.28\n0.5,3.5,1,1.75\n4.5,4.5,2,5.0625\n";
+    let (m, _, v) = top_and_verdict(t);
+    assert_eq!((m.as_str(), v.as_str()), ("x1*x2/x3**2", "exact"));
+    let j = run_json(
+        "m1,m2,r,y\n1.5,2.5,0.5,15\n2.5,1.5,1.5,1.6666666666667\n3.5,0.5,2.5,0.28\n0.5,3.5,1,1.75\n",
+    );
+    assert!(j
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .contains("at least 5"));
+}
+
+#[test]
+fn a_copy_of_the_target_and_a_second_target_name() {
+    let mut s = 3u64;
+    let t: String = "x,copy,y\n".to_string()
+        + &(0..12)
+            .map(|_| {
+                let x = 0.2 + lcg(&mut s);
+                format!("{},{},{}\n", x, x * x, x * x)
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!((m.as_str(), v.as_str()), ("x2", "exact"));
+    let t: String = "y,x,y\n".to_string()
+        + &(0..12)
+            .map(|_| {
+                let x = 0.2 + lcg(&mut s);
+                format!("{},{},{}\n", 0.5 * x, x, 1.5 * x)
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    assert_eq!(
+        j.get("names")
+            .and_then(|n| n.get("columns"))
+            .and_then(|c| c.as_arr())
+            .map(|c| c.len()),
+        Some(1)
+    );
+}
+
+#[test]
+fn a_saturated_function_ranks_after_the_clean_law() {
+    let t = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/nasa_planets_orbit.tsv"
+    ))
+    .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = "orbital_velocity_kms".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    let m = top
+        .get("named")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(m, "72.4*distance_1e6km/orbital_period_days");
+    let d = [
+        57.9, 108.2, 149.6, 228.0, 778.5, 1432.0, 2867.0, 4515.0, 5906.4,
+    ];
+    let p = [
+        88.0, 224.7, 365.2, 687.0, 4331.0, 10747.0, 30589.0, 59800.0, 90560.0,
+    ];
+    assert!(crate::guard::has_saturated(
+        "232*arctan(x2)/sqrt(x1)",
+        &[d.to_vec(), p.to_vec()],
+        9
+    ));
+}
+
+#[test]
+fn an_unmeasured_floor_is_not_called_full_precision() {
+    let t = "L,y\n0.1,0.63\n0.2,0.9\n0.3,1.1\n0.4,1.3\n0.5,1.4\n0.6,1.6\n0.7,1.7\n0.8,1.8\n0.9,1.9\n1.0,2.0\n1.1,2.1\n1.2,2.2\n";
+    let out = run_text(t, test_cfg()).unwrap();
+    let s = crate::summary::render(&out);
+    assert!(
+        !s.contains("full precision") && s.contains("not estimated"),
+        "{}",
+        s
+    );
+}
+
+#[test]
+fn a_precise_target_ends_the_search_early_and_wide_tables_keep_the_budget() {
+    let mut s = 9u64;
+    let t = std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/examples/gravity.tsv"))
+        .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = "force".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    assert_eq!(
+        j.get("stopped_by").and_then(|v| v.as_str()),
+        Some("exact_exit")
+    );
+    let cols = 45;
+    let t: String = (1..=cols).map(|i| format!("f{},", i)).collect::<String>()
+        + "y\n"
+        + &(0..50)
+            .map(|_| {
+                let x: Vec<f64> = (0..cols).map(|_| 0.5 + 4.5 * lcg(&mut s)).collect();
+                x.iter().map(|v| format!("{},", v)).collect::<String>()
+                    + &format!("{}\n", x[4] * x[40])
+            })
+            .collect::<String>();
+    let mut cfg = test_cfg();
+    cfg.timeout_ms = 3000;
+    let t0 = std::time::Instant::now();
+    let out = run_text(&t, cfg).unwrap();
+    assert!(t0.elapsed().as_secs_f64() < 5.0, "{:?}", t0.elapsed());
+    assert!(out.contains("feature columns"));
 }

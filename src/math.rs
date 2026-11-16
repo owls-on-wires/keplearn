@@ -393,6 +393,11 @@ pub(crate) fn snap_value(v: f64) -> Option<f64> {
             if base != 1.0 && (p > MULT_MAX || q as f64 > MULT_MAX) {
                 continue;
             }
+            if FEW_MULT_BASES.iter().any(|&b| b == base)
+                && !matches!((p as u32, q), (1, 1) | (2, 1) | (1, 2))
+            {
+                continue;
+            }
             let s = p / q as f64 * base;
             if s == av {
                 return None;

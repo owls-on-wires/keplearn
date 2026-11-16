@@ -151,6 +151,18 @@ pub(crate) const CONSTANTS: &[(&str, f64)] = &[
     ("euler_gamma", 0.577_215_664_901_532_9),              // harmonic sums
     ("golden_ratio", 1.618_033_988_749_895),               // Fibonacci growth
 ];
+/// CONSTANTS bases snapped only as 1, 2 or 1/2 times themselves (as
+/// forms::nf's few-multiplier families): their p/q multiples would cover
+/// the number line.
+pub(crate) const FEW_MULT_BASES: &[f64] = &[
+    0.398_942_280_401_432_7,
+    2.506_628_274_631_000_5,
+    std::f64::consts::LN_2,
+    std::f64::consts::LOG2_E,
+    std::f64::consts::LN_10,
+    0.577_215_664_901_532_9,
+    1.618_033_988_749_895,
+];
 /// Denominators tried for the rational multiple p/q of each CONSTANTS base.
 pub(crate) const SNAP_DENOMS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 
@@ -409,3 +421,18 @@ pub(crate) const FEATURE_EXACT_RATIO: f64 = 100.0;
 /// Depth-1 offset shells (log(y − b) and the like) given the basis
 /// terminal, on slots apart from BASIS_DEPTH1_CAP's.
 pub(crate) const OFFSET_BASIS_CAP: usize = 8;
+
+/// Feature columns read as exact settings must be written mostly with at
+/// most this many significant digits (0.25, 1.5, 120): a column of
+/// six-digit values is a set of measurements.
+pub(crate) const SETTING_MAX_DIGITS: usize = 3;
+
+/// A unary or square root whose output varies by less than this fraction of
+/// its mean over the rows is saturated: it acts as a constant
+/// (guard::saturated_nodes).
+pub(crate) const SATURATION_REL: f64 = 0.02;
+
+/// Feature columns above which the input gets a warning: the search's first
+/// step grows with the column pairs, and wider tables are searched only in
+/// part within a budget.
+pub(crate) const WIDE_COLUMNS: usize = 20;

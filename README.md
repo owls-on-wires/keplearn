@@ -23,7 +23,7 @@ recursive reduction.
 - Says how far to trust each answer: exact, approximate, or no law found,
   judged against the precision the data is written to
 - Handles small tables (a law with one constant from 6 rows, one with none
-  from 4) and rounded data; noise beyond the data's written precision is
+  from 5) and rounded data; noise beyond the data's written precision is
   reported as an approximate fit, not an exact law
 - Single binary, zero dependencies (fully static with the musl target)
 - Deterministic; the same input produces the same output, byte for byte
@@ -81,7 +81,7 @@ release archive.
 $ ./keplearn --target force --format summary < examples/gravity.tsv
 force = m1*m2/r**2                                exact (r2 = 1.0000, 60 rows)
 constants: none free
-data: 60 rows, 3 columns; rounding floor 4.4e-12 of the target's variance
+data: 60 rows, 3 columns; rounding floor 1.0e-6 of the target's variance
 ```
 
 The summary states a verdict for the answer:
@@ -118,10 +118,11 @@ Noise beyond the data's written precision is reported as approximate:
 
 ```sh
 $ ./keplearn --target P_kPa --format summary < examples/gas_1pct_noise.tsv
-P_kPa = 8.3*T_K/V_L                               approximate (r2 = 0.9992, 441 rows)
+P_kPa = 8.33333333333*T_K/V_L                     approximate (r2 = 0.9991, 441 rows)
 constants: 1 free
 why not exact: the best fit leaves residuals above the precision the cells are written to
-data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
+data: 441 rows, 2 columns; rounding floor 3.8e-3 of the target's variance
+next best: P_kPa = 13.075*T_K - (7*2**(1/4))*T_K*arctan(V_L)    approximate
 ```
 
 The default output is one JSON object (schema `keplearn.result.v2`), the
@@ -153,9 +154,9 @@ $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
   ],
   "verdict": "exact",
   "reason": null,
-  "stopped_by": "frontier_exhausted",
+  "stopped_by": "exact_exit",
   "validation": "leave-one-out",
-  "noise_floor": 4.408011385397939e-12,
+  "noise_floor": 1.037230275256967e-6,
   "names": {"target": "force", "columns": ["m1", "m2", "r"]},
   "rows": 60,
   "warnings": []

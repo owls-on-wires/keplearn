@@ -99,7 +99,7 @@ NOTES:
   * With many columns, run subsets of 2-5 at a time: irrelevant columns
     drop out of the answer, but the search slows as they accumulate.
   * Output is deterministic; --seed has no effect.
-  * A table needs 4 rows to be searched; with 4 or 5 only a law with no
+  * A table needs 5 rows to be searched; with 5 only a law with no
     fitted constant can be confirmed, one with a constant needs 6.
   * Round feature values (0.25, 0.5, integers) count as exact settings
     when the target is written far more precisely; otherwise as rounded

@@ -370,7 +370,13 @@ pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> 
         if sa == 0.0 || sb == 0.0 || !(sv > 0.0) {
             continue;
         }
-        if sa.min(sb) < COND_NEGLIGIBLE * sv || sa + sb > COND_CANCEL_MAX * sv {
+        let negligible = COND_NEGLIGIBLE.max(
+            FLOOR
+                .with(|f| f.get())
+                .max(1.0 - crate::config::EXACT_EXIT_R2)
+                .sqrt(),
+        );
+        if sa.min(sb) < negligible * sv || sa + sb > COND_CANCEL_MAX * sv {
             return false;
         }
     }
@@ -411,4 +417,118 @@ pub(crate) fn within_rounding(
         }
     }
     true
+}
+
+fn saturated_nodes(ast: &crate::forms::ast::Ast, cols: &[Vec<f64>], n: usize) -> Vec<(usize, f64)> {
+    use crate::forms::ast::Ast;
+    fn walk(a: &Ast, cols: &[Vec<f64>], n: usize, idx: &mut usize, out: &mut Vec<(usize, f64)>) {
+        let me = *idx;
+        *idx += 1;
+        if matches!(a, Ast::Un(..) | Ast::Sqrt(..)) {
+            let v: Vec<f64> = (0..n)
+                .map(|i| a.eval(cols, i))
+                .filter(|x| x.is_finite())
+                .collect();
+            if v.len() >= 2 {
+                let m = v.iter().sum::<f64>() / v.len() as f64;
+                let lo = v.iter().cloned().fold(f64::INFINITY, f64::min);
+                let hi = v.iter().cloned().fold(f64::NEG_INFINITY, f64::max);
+                if m.abs() > 0.0 && (hi - lo) < crate::config::SATURATION_REL * m.abs() {
+                    out.push((me, m));
+                    return;
+                }
+            }
+        }
+        match a {
+            Ast::Add(x, y) | Ast::Sub(x, y) | Ast::Mul(x, y) | Ast::Div(x, y) | Ast::Pow(x, y) => {
+                walk(x, cols, n, idx, out);
+                walk(y, cols, n, idx, out);
+            }
+            Ast::Neg(x) | Ast::Un(_, x) | Ast::Sqrt(x) => walk(x, cols, n, idx, out),
+            Ast::Num(_) | Ast::Var(_) => {}
+        }
+    }
+    let mut out = Vec::new();
+    walk(ast, cols, n, &mut 0, &mut out);
+    out
+}
+
+pub(crate) fn has_saturated(model: &str, features: &[Vec<f64>], n: usize) -> bool {
+    let Ok(ast) = crate::forms::ast::parse(model) else {
+        return false;
+    };
+    let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
+    !saturated_nodes(&ast, &cols, n).is_empty()
+}
+
+pub(crate) fn padding_removable(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+    tol: f64,
+) -> bool {
+    use crate::forms::ast::Ast;
+    let Ok(ast) = crate::forms::ast::parse(model) else {
+        return false;
+    };
+    let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
+    let sat = saturated_nodes(&ast, &cols, n);
+    if sat.is_empty() {
+        return false;
+    }
+    let r2_of = |a: &Ast| -> f64 {
+        let rows: Vec<usize> = (0..n).filter(|&i| target[i].is_finite()).collect();
+        let m = rows.iter().map(|&i| target[i]).sum::<f64>() / rows.len().max(1) as f64;
+        let (mut res, mut tot) = (0.0f64, 0.0f64);
+        for &i in &rows {
+            let p = a.eval(&cols, i);
+            if !p.is_finite() {
+                return f64::NEG_INFINITY;
+            }
+            res += (target[i] - p).powi(2);
+            tot += (target[i] - m).powi(2);
+        }
+        if tot > 0.0 {
+            1.0 - res / tot
+        } else {
+            f64::NEG_INFINITY
+        }
+    };
+    fn replace(a: &Ast, at: usize, v: f64, idx: &mut usize) -> Ast {
+        let me = *idx;
+        *idx += 1;
+        if me == at {
+            return Ast::Num(v);
+        }
+        match a {
+            Ast::Add(x, y) => Ast::Add(
+                Box::new(replace(x, at, v, idx)),
+                Box::new(replace(y, at, v, idx)),
+            ),
+            Ast::Sub(x, y) => Ast::Sub(
+                Box::new(replace(x, at, v, idx)),
+                Box::new(replace(y, at, v, idx)),
+            ),
+            Ast::Mul(x, y) => Ast::Mul(
+                Box::new(replace(x, at, v, idx)),
+                Box::new(replace(y, at, v, idx)),
+            ),
+            Ast::Div(x, y) => Ast::Div(
+                Box::new(replace(x, at, v, idx)),
+                Box::new(replace(y, at, v, idx)),
+            ),
+            Ast::Pow(x, y) => Ast::Pow(
+                Box::new(replace(x, at, v, idx)),
+                Box::new(replace(y, at, v, idx)),
+            ),
+            Ast::Neg(x) => Ast::Neg(Box::new(replace(x, at, v, idx))),
+            Ast::Un(u, x) => Ast::Un(*u, Box::new(replace(x, at, v, idx))),
+            Ast::Sqrt(x) => Ast::Sqrt(Box::new(replace(x, at, v, idx))),
+            other => other.clone(),
+        }
+    }
+    let base = r2_of(&ast);
+    sat.iter()
+        .any(|&(at, v)| r2_of(&replace(&ast, at, v, &mut 0)) >= base - tol)
 }

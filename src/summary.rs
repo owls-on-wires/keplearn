@@ -88,8 +88,14 @@ pub fn render(json: &str) -> String {
             }
         }
     }
+    let not_estimated = j.get("warnings").and_then(|w| w.as_arr()).is_some_and(|w| {
+        w.iter()
+            .any(|x| x.as_str() == Some(crate::output::FLOOR_NOT_ESTIMATED))
+    });
     let precision = if floor > 0.0 {
         format!("rounding floor {:.1e} of the target's variance", floor)
+    } else if not_estimated {
+        "rounding floor not estimated (no search candidate fitted to r2 0.999)".to_string()
     } else {
         "full precision".to_string()
     };
@@ -109,7 +115,10 @@ pub fn render(json: &str) -> String {
     }
     if let Some(w) = j.get("warnings").and_then(|w| w.as_arr()) {
         for x in w {
-            if let Some(t) = x.as_str() {
+            if let Some(t) = x
+                .as_str()
+                .filter(|t| *t != crate::output::FLOOR_NOT_ESTIMATED)
+            {
                 out.push_str(&format!("note: {}\n", t));
             }
         }

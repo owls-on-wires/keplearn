@@ -22,12 +22,16 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             }
         }
     }
-    for &(base, _, powers) in crate::forms::nf::SNAP_FAMILIES {
+    for &(base, _, powers, full) in crate::forms::nf::SNAP_FAMILIES {
         for &k in powers {
             let b = base.powf(k);
             for den in crate::forms::nf::SNAP_DENOMS {
                 let num = (v / b * den as f64).round();
-                if num != 0.0 && num.abs() <= crate::forms::nf::SNAP_MULT_MAX {
+                let admitted = full
+                    || crate::forms::nf::SNAP_FEW_MULTS
+                        .iter()
+                        .any(|&(p, q)| p == num.abs() && q == den);
+                if num != 0.0 && num.abs() <= crate::forms::nf::SNAP_MULT_MAX && admitted {
                     out.push((
                         2,
                         den,

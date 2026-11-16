@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.1.0, result schema `keplearn.result.v2`.
+Version 1.2.0, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -30,13 +30,18 @@ is a literal quote. Blank lines are ignored.
 **Columns.**
 
 - The target is the column whose header equals `--target` (default
-  `target`). If two columns carry that name, the first is the target.
+  `target`). If two columns carry that name, the first is the target and
+  the other is dropped with a warning (an answer in it would read as the
+  target in terms of itself).
 - Every other column is a feature, in file order: the first feature is
   `x1` in the output, the second `x2`, and so on.
 - A feature column with no numeric value in any row (names, labels) is
   dropped, with a warning. So is a feature with the same value on every
   row: it cannot explain anything. The remaining features keep their
   order.
+- More than 20 feature columns get a warning: the search's first step
+  grows with the pairs of columns, and a wide table is searched only in
+  part within a budget.
 - A column with values beyond 1e150 gets a warning: their squares
   overflow, and laws over them may not be found. Rescale such a column.
 - A duplicated column name produces a warning.
@@ -80,20 +85,24 @@ Input that is not valid UTF-8 is read with the undecodable bytes replaced
 by `�`, and a warning says so. Control characters in column names are
 escaped in error messages.
 
-**Tables that are not searched.** Two cases return at once, with exit
+**Tables that are not searched.** Three cases return at once, with exit
 status 0:
 
 - a target with the same value on every row (two rows or more): the
   answer is that value, verdict `exact`, `r2` null (r² is undefined for a
   constant), and a warning names the value;
-- fewer than 4 data rows: no answer, verdict `no law found`, and a
-  `reason` saying a law needs at least 4 rows (6 if it has a fitted
+- a feature column equal to the target on every row: the answer is that
+  column, verdict `exact`, with a warning (a longer form of the same law
+  could otherwise be found first);
+- fewer than 5 data rows: no answer, verdict `no law found`, and a
+  `reason` saying a law needs at least 5 rows (6 if it has a fitted
   constant).
 
-With 4 or 5 rows the table is searched, but only a law with no fitted
-constant (such as `m1*m2/r**2`) can be confirmed; a law with one constant
-is fitted with an offset and checked by leaving each row out, which takes
-6 rows. The `reason` says so when nothing is confirmed.
+Every candidate is first fitted with a scale and an offset, which takes 5
+rows; a law with no constant (such as `m1*m2/r**2`) is what remains when
+they snap to 1 and 0. With 5 rows only such a law can be confirmed; a law
+with one constant is also checked by leaving each row out, which takes 6
+rows. The `reason` says so when nothing is confirmed.
 
 A target that is negative on every row is searched as its negation and
 the answers are negated back; the output is in the target's own sign.
@@ -117,7 +126,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn 1.0.0` and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.0`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -139,13 +148,13 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `reason` | string or null | why the verdict is not `exact`; null when it is |
 | `stopped_by` | string | `exact_exit` (an exact answer ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) |
 | `validation` | string | `holdout` (80 rows or more) or `leave-one-out` (fewer); see [scoring](#scoring) |
-| `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision data |
+| `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
 | `rows` | integer | data rows read (after skipped rows) |
-| `warnings` | array of strings | notes on the input (dropped or constant columns, skipped rows, duplicate names, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded) |
+| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded; a rounding floor not estimated) |
 | `time_ms` | integer | elapsed milliseconds; present only with `--timing` |
 
-`results` is empty only for a table too small to search (fewer than 4
+`results` is empty only for a table too small to search (fewer than 5
 rows). When nothing better is found, the one answer is the target's mean,
 with `r2` 0 and verdict `no law found`.
 
@@ -225,13 +234,20 @@ All of these hold:
    most 1, where a row's tolerance is 3 times its rounding variance plus
    (1e-8 × the row's value)².
 4. **It is well conditioned.**
-   - No term of any sum is smaller than 1e-9 of the sum.
+   - No term of any sum is negligible: its share of the sum is at least
+     the precision exact is judged at, the square root of the larger of
+     the rounding floor and 1e-9 (so at least 3e-5).
    - No sum's terms exceed the sum itself by a factor of 1e6 (huge
      constants cancelling).
    - No function or power group has an argument that barely varies over
      the rows (a range below 3% of its typical size, or 0.03 in absolute
      terms for `exp`, `sin` and `cos`). Over such a range the function is
      nearly linear and stands in for a simpler form.
+   - No function is padding: a function or square root whose output
+     varies by less than 2% of its mean over the rows is saturated, and
+     if replacing it by its mean keeps the answer within the exact
+     tolerance, it is a constant written long (`arctan(T)` where T is
+     large on every row).
 5. **It has rows to spare.** The table has at least (free constants + 3)
    rows.
 6. **It is close to the best answer.** An answer below the first is exact
@@ -281,16 +297,33 @@ training rows, divided by the target's variance.
 of 0.25 or 0.5, an angle of 0.1, an integer count) may be an exact setting
 or a coarse reading, and the digits alone cannot say which. Keplearn
 computes the floor both ways: with the target's precision only (features
-exact) and with the features' too. If the second is more than 100 times
-the first, the target was written far more precisely than the features'
-rounding would let anyone know it, so the features are read as exact
-settings and only the target's precision counts. Otherwise both columns
-are read as rounded as written. When an answer is exact only under that
-second reading, a warning says so. Keplearn computes it
-through each candidate whose R² on the target is within 0.01 of the best
-(at most 30 of them), and takes the smallest. It does this only when the
-best R² is at least 0.999; otherwise rounding is not what limits the fit,
-and the floor is 0. A floor below 1e-18 is reported as 0.
+exact) and with the features' too. The features are read as exact
+settings when both hold:
+
+- the second floor is more than 100 times the first: the target was
+  written far more precisely than the features' rounding would let anyone
+  know it;
+- every feature column with written precision looks like settings: it
+  is mostly written with at most 3 significant digits (0.25, 1.5, 120),
+  or it repeats on a design grid (at most half as many distinct values as
+  rows, as temperatures 273.15, 278.15, ... repeated across volumes). A
+  column of distinct six-digit values is a set of measurements however
+  precise the target.
+
+Otherwise both columns are read as rounded as written. When an answer is
+exact only under that second reading, a warning says so.
+
+Keplearn computes each floor through every candidate whose R² on the
+target is within 0.01 of the best (at most 30 of them), and takes the
+smallest. It does this only when some candidate of the search reaches R²
+0.999; otherwise the floor is not estimated, `noise_floor` is 0, a
+warning says so, and the summary prints "rounding floor not estimated"
+instead of "full precision". A floor below 1e-18 is reported as 0.
+
+During the search, before any candidate exists, "exact" is judged against
+the target's own floor, which needs no candidate (its cells' rounding
+variance relative to its variance): a law fitting a precisely written
+target ends the search at once.
 
 A floor is an upper bound on the error from rounding. When the features
 are read as rounded and are in fact exact settings, the floor is too
@@ -303,12 +336,16 @@ from being called exact.
 A constant is free when it was read off the data. These are not free:
 
 - integers and fractions p/q with |p| and q at most 12;
-- multiples p/q, with |p| at most 8 and q one of 1, 2, 3, 4, 6, 8, of:
-  - π, e, √2 and √3, and their squares, square roots and reciprocals;
+- multiples p/q, with |p| at most 8 and q one of 1, 2, 3, 4, 6, 8, of π,
+  e, √2 and √3, and of their squares, square roots and reciprocals;
+- 1, 2 or ½ times (only):
   - √(2π) and 1/√(2π) (Gaussian normalisation);
   - ln 2 and ln 10, and their reciprocals;
   - the Euler–Mascheroni constant γ (written `euler_gamma`);
   - the golden ratio φ and 1/φ (written `(1 + sqrt(5))/2`).
+
+  The second group is limited so that named constants do not cover the
+  number line (2.0148 is within 1e-5 of 7·ln 10/8).
 
   These are the forms `symbolic` writes by name.
 
@@ -355,6 +392,9 @@ Answers are ordered by verdict: every `exact` answer first, then
   first);
 - from 80 rows: by description length on the held-out rows.
 
+Within a verdict, an answer holding a saturated function (see rule 4
+above) comes after the answers without one.
+
 The verdicts are given to the first 3 × `--top-k` distinct candidates the
 search ranks highest, before this ordering.
 
@@ -380,9 +420,12 @@ answer can have the higher `r2`:
   new candidate is started once the budget is spent, and at least one is
   always finished.
 
-The first search step (the root of the search) always completes. On a
-wide table that can take up to a second or so, which is the shortest
-budget that is honoured. With `--timeout 0` the search runs until it
+The first search step (the root of the search) always completes, but it
+checks the deadline inside its larger parts (the term library, the
+product screen, the children over column pairs), so even on a wide table
+the run ends close to the budget. Below about a second the budget is not
+honoured exactly: the first step's fixed work takes that long on a wide
+table. With `--timeout 0` the search runs until it
 finishes.
 
 An exact answer ends the search early (`stopped_by: exact_exit`) when its
@@ -422,10 +465,15 @@ and `--seed` has no effect. Two things break this:
   ratio of two such sums. A law outside that space is not found. Its best
   approximation is reported as `approximate` or `no law found`.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
-  of the answer, but every column widens the search, and twenty columns
-  take seconds and hundreds of megabytes even for an easy law.
-- **Rows.** A law with k constants needs at least k + 3 rows to be
-  exact. Six rows suffice for a power law with one constant. Below 80
+  of the answer, but every column widens the search: twenty columns take
+  seconds and about 200 MB even for an easy law, and from about 40
+  columns a 10-second budget is spent in the first step without finding
+  a two-column law. The product library uses products of up to three
+  columns up to 21 columns and of two beyond, keeping memory near tens of
+  megabytes on wide tables.
+- **Rows.** A table needs 5 rows to be searched; a law with k constants
+  needs at least k + 3 rows to be exact. Five rows suffice for a law with
+  no constant, six for a power law with one. Below 80
   rows the leave-one-out refits make scoring slower in proportion to the
   rows.
 - **Noise.** Noisy data gives `approximate` at best, and the search

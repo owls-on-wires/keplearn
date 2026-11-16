@@ -1,5 +1,49 @@
 # Changelog
 
+## 1.2.0
+
+The output schema is unchanged (`keplearn.result.v2`).
+
+**Wide tables**
+
+- `--timeout` holds on wide tables: the first search step checks the
+  deadline inside its larger parts, and the product library uses products
+  of up to three columns only up to 21 columns (two beyond). A 60-column
+  table with a 10 s budget took 49 s and 6.8 GB (and could fail to
+  allocate memory); it now ends within the budget in tens of megabytes.
+- More than 20 feature columns get a warning suggesting subsets.
+
+**Verdicts and ranking**
+
+- A function that is nearly constant over the data (`arctan(T)` where T
+  is large) is padding: it never makes an answer exact when a constant
+  could replace it, and such answers rank after clean ones of the same
+  verdict. A term below the data's precision counts as negligible.
+- Feature columns are read as exact settings only when they look like
+  settings: written with at most three significant digits, or repeating
+  on a design grid. Columns of distinct six-digit values are readings.
+- The 1.1.0 constants (`log(2)`, `log(10)`, `euler_gamma`, the golden
+  ratio, `sqrt(2*pi)`) are named only as 1, 2 or 1/2 times themselves; a
+  fitted 2.0148 is no longer written as `7*log(10)/8`.
+- A precisely written target ends the search as soon as its law is found
+  (the README's gravity example: 20 s before, now milliseconds).
+
+**Small and odd tables**
+
+- A table needs 5 rows to be searched (4 rows could never succeed: every
+  law is first fitted with a scale and an offset). Five rows confirm a law
+  with no constant, six one with a constant.
+- A second column named as the target is dropped with a warning; a
+  feature equal to the target on every row is reported as the answer.
+- When the rounding floor could not be estimated, the result says so
+  (a warning; the summary prints "rounding floor not estimated") instead
+  of "full precision".
+
+**Documentation**
+
+- The reference states the version `-V` prints, and documents every rule
+  above. The README examples show their full output.
+
 ## 1.1.0
 
 The output schema is unchanged (`keplearn.result.v2`). What "exact" means

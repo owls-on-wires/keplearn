@@ -75,6 +75,27 @@ fn library_cached(d: usize, cap: usize) -> Option<std::sync::Arc<Vec<Expr>>> {
     v
 }
 
+pub const MONOMIAL_BUDGET: usize = 300_000;
+
+fn product_support(d: usize) -> usize {
+    let nq = crate::forms::nf::Q::CORE.len();
+    let count = |s: usize| -> usize {
+        let (mut total, mut choose, mut pow) = (0usize, 1usize, 1usize);
+        for j in 0..=s.min(d) {
+            if j > 0 {
+                choose = choose.saturating_mul(d - j + 1) / j;
+                pow = pow.saturating_mul(nq);
+            }
+            total = total.saturating_add(choose.saturating_mul(pow));
+        }
+        total
+    };
+    (1..=PRODUCT_SUPPORT.min(d))
+        .rev()
+        .find(|&s| count(s) <= MONOMIAL_BUDGET)
+        .unwrap_or(1)
+}
+
 fn monomial_factors(d: usize, support: usize) -> Vec<Vec<crate::forms::nf::Factor>> {
     let mut out: Vec<Vec<crate::forms::nf::Factor>> = vec![Vec::new()];
     for c in 0..d {
@@ -214,7 +235,7 @@ fn stage_set(sub: &[Vec<f64>], stage: u8) -> Option<AtomSet> {
 
 fn monomial_terms(sub: &[Vec<f64>]) -> Vec<Term> {
     let d = sub.len();
-    monomial_factors(d, PRODUCT_SUPPORT.min(d))
+    monomial_factors(d, product_support(d))
         .into_iter()
         .filter(|f| !f.is_empty())
         .map(|factors| Term {
@@ -281,7 +302,7 @@ fn screen_tables(sub: &[Vec<f64>]) -> Option<ScreenTables> {
     let finite = |v: &[f64]| v.iter().all(|t| t.is_finite());
     let mut mf: Vec<Vec<Factor>> = Vec::new();
     let mut mv: Vec<Vec<f64>> = Vec::new();
-    for f in monomial_factors(d, PRODUCT_SUPPORT.min(d)) {
+    for f in monomial_factors(d, product_support(d)) {
         let v: Vec<f64> = srows
             .iter()
             .map(|&r| {
@@ -399,6 +420,9 @@ fn product_screen(sub: &[Vec<f64>], ys: &[f64], have: &[Term]) -> Vec<Term> {
     let mut resid = ysr.clone();
     let mut step_best: Vec<Vec<f64>> = Vec::new();
     for _ in 0..PRODUCT_STEPS {
+        if crate::out_of_time() {
+            break;
+        }
         let rm = resid.iter().sum::<f64>() / ns as f64;
         let rc: Vec<f32> = resid.iter().map(|v| (v - rm) as f32).collect();
         let rr: f32 = rc.iter().map(|v| v * v).sum();
@@ -720,6 +744,9 @@ pub fn basis_ext(
     for stage in 0u8..3 {
         if stage >= 1 && !products {
             break;
+        }
+        if crate::out_of_time() {
+            return None;
         }
         let set = cached_tag(&ATOM_CACHE, (fp, stage), || stage_set(&sub, stage));
         let Some(set) = &*set else { continue };

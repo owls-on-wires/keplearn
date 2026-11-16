@@ -217,6 +217,8 @@ pub(crate) fn named_model(model: &str, names: &[String]) -> String {
     out
 }
 
+pub(crate) const FLOOR_NOT_ESTIMATED: &str = "the rounding floor was not estimated: no candidate of the search fitted to r2 0.999, so the data's precision was not measured and exactness was judged at r2 1 - 1e-9";
+
 pub(crate) const SCHEMA: &str = "keplearn.result.v2";
 
 static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);

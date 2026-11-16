@@ -56,6 +56,7 @@ pub(crate) struct Ingest {
     pub(crate) q_features: Vec<Vec<f64>>,
     pub(crate) q_target: Vec<f64>,
     pub(crate) names: Vec<String>,
+    pub(crate) feature_settings: Vec<bool>,
 }
 
 pub(crate) fn cell_sig(s: &str) -> usize {
@@ -196,6 +197,13 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     };
     let mut feat_idx: Vec<usize> = Vec::new();
     for i in (0..header.len()).filter(|&i| i != target_idx) {
+        if header[i].trim() == target_col {
+            warnings.push(format!(
+                "a second column is named '{}' like the target; it is dropped",
+                target_col
+            ));
+            continue;
+        }
         if numeric(i) {
             feat_idx.push(i);
         } else {
@@ -295,6 +303,15 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                 .into(),
         );
     }
+    if features.len() > WIDE_COLUMNS {
+        warnings
+            .push(
+                format!(
+                    "the table has {} feature columns; within a budget the search covers few of their combinations, so laws are found far more readily in subsets of 2 to 5 columns",
+                    features.len()
+                ),
+            );
+    }
     let n_cols = features.len();
     let big = |v: &[f64]| v.iter().any(|x| x.abs() > OVERFLOW_ABS);
     for (j, c) in features.iter().enumerate() {
@@ -348,6 +365,27 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     for ((c, q), sg) in features.iter().zip(q_features.iter_mut()).zip(&s_features) {
         column_quanta(c, q, sg);
     }
+    let feature_settings: Vec<bool> = s_features
+        .iter()
+        .zip(&features)
+        .map(|(sg, c)| {
+            let mut counts: std::collections::HashMap<usize, usize> =
+                std::collections::HashMap::new();
+            for &d in sg.iter().filter(|d| **d > 0) {
+                *counts.entry(d).or_insert(0) += 1;
+            }
+            let mode = counts
+                .into_iter()
+                .max_by_key(|(d, c)| (*c, *d))
+                .map_or(0, |(d, _)| d);
+            let distinct = c
+                .iter()
+                .map(|v| v.to_bits())
+                .collect::<std::collections::HashSet<_>>()
+                .len();
+            mode <= SETTING_MAX_DIGITS || 2 * distinct <= c.len()
+        })
+        .collect();
     column_quanta(&target, &mut q_target, &s_target);
     Ok(Ingest {
         features,
@@ -357,6 +395,7 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
         q_features,
         q_target,
         names,
+        feature_settings,
     })
 }
 
@@ -464,9 +503,10 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         mut q_target,
         names,
         warnings: ingest_warnings,
+        feature_settings,
     } = ing;
     let n_rows = target.len();
-    let few = n_rows < fit_min_rows(1);
+    let few = n_rows < fit_min_rows(2);
     let constant = constant_target(&target).filter(|_| n_rows >= 2);
     if constant.is_some() || few {
         let mut warnings = ingest_warnings.clone();
@@ -495,7 +535,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                     Some(
                         format!(
                             "the table has {} data row{}; a law needs at least {} (and {} if it has a fitted constant)",
-                            n_rows, if n_rows == 1 { "" } else { "s" }, fit_min_rows(1),
+                            n_rows, if n_rows == 1 { "" } else { "s" }, fit_min_rows(2),
                             min_law_rows()
                         ),
                     ),
@@ -511,6 +551,55 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             } else {
                 "frontier_exhausted"
             },
+            validation: if n_rows >= HOLDOUT_MIN_ROWS {
+                "holdout"
+            } else {
+                "leave-one-out"
+            },
+            noise_floor: 0.0,
+            target: &target_col,
+            columns: &names,
+            rows: n_rows_in,
+            warnings: &warnings,
+            time_ms: timing.then_some(0),
+        }
+        .json();
+        let mut rendered = if pretty { json_pretty(&oj) } else { oj };
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    if let Some(j) = features
+        .iter()
+        .position(|c| c.len() == target.len() && c.iter().zip(&target).all(|(a, b)| a == b))
+    {
+        let mut warnings = ingest_warnings.clone();
+        warnings.push(format!(
+            "column '{}' equals the target on every row",
+            names[j]
+        ));
+        let model = format!("x{}", j + 1);
+        let r = crate::output::ResultObj {
+            expr: model.clone(),
+            model: model.clone(),
+            r2: Some(1.0),
+            search_r2: Some(1.0),
+            holdout_r2: Some(1.0),
+            scale: 1.0,
+            offset: 0.0,
+            columns: (0..n_cols).collect(),
+            uses: vec![names[j].clone()],
+            structure: Some(format!("c1*{} + b", model)),
+            canonical: Some(model.clone()),
+            verdict: "exact",
+            symbolic: model.clone(),
+            named: crate::output::named_model(&model, &names),
+            free_constants: Some(0),
+        };
+        let oj = crate::output::Envelope {
+            results: vec![r],
+            verdict: "exact",
+            reason: None,
+            stopped_by: "exact_exit",
             validation: if n_rows >= HOLDOUT_MIN_ROWS {
                 "holdout"
             } else {
@@ -563,6 +652,22 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
     }
     crate::guard::set_quanta(&q_features, &q_target);
+    {
+        let t = &target[..train_n];
+        let m = t.iter().sum::<f64>() / train_n.max(1) as f64;
+        let vy = t.iter().map(|v| (v - m) * (v - m)).sum::<f64>() / train_n.max(1) as f64;
+        let e = q_target[..train_n]
+            .iter()
+            .map(|q| q * q / 12.0)
+            .sum::<f64>()
+            / train_n.max(1) as f64;
+        let f = if vy > 0.0 { e / vy } else { 0.0 };
+        crate::guard::set_floor(if f.is_finite() && f > NOISE_FLOOR_MIN {
+            f
+        } else {
+            0.0
+        });
+    }
     let sample_n = sample.min(train_n.max(1));
     let hold_n = if holdout_n_full >= HOLDOUT_MIN_ACTIVE {
         holdout_n_full.min(HOLDOUT_MAX)
@@ -966,7 +1071,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
     }
     let zero_qf: Vec<Vec<f64>> = q_features.iter().map(|c| vec![0.0; c.len()]).collect();
-    let (floor, features_exact, floor_with_features) = {
+    let (floor, features_exact, floor_with_features, floor_estimated) = {
         let t: Vec<f64> = if negated {
             target[..train_n].iter().map(|v| -v).collect()
         } else {
@@ -1005,10 +1110,15 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         };
         let ft = floor_of(&zero_qf);
         let ff = floor_of(&q_features);
-        if ff <= ft || ff > FEATURE_EXACT_RATIO * ft {
-            (ft, true, ft)
+        let few_digits = q_features
+            .iter()
+            .zip(&feature_settings)
+            .all(|(q, &set)| q.iter().all(|x| *x == 0.0) || set);
+        let estimated = best_fit >= FLOOR_MIN_FIT;
+        if ff <= ft || (ff > FEATURE_EXACT_RATIO * ft && few_digits) {
+            (ft, true, ft, estimated)
         } else {
-            (ff, false, ft)
+            (ff, false, ft, estimated)
         }
     };
     let floor_settings = floor_with_features;
@@ -1154,10 +1264,12 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             }
         }
     }
+    let exact_tol = (1.0 - EXACT_EXIT_R2).max(NOISE_FLOOR_K * floor);
     let law_shaped = |model: &str| {
         crate::guard::fits_each_row(model, &features, &target, n_rows)
             && crate::guard::within_rounding(model, &features, &target, n_rows)
             && crate::guard::well_conditioned(model, &features, n_rows)
+            && !crate::guard::padding_removable(model, &features, &target, n_rows, exact_tol)
     };
     if crate::output::verbose() {
         eprintln!("stage scoring: {} ms", t0.elapsed().as_millis());
@@ -1397,7 +1509,17 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 why,
             });
         }
-        pool.sort_by_key(|e| rank(e.v));
+        let padded: Vec<bool> = pool
+            .iter()
+            .map(|e| crate::guard::has_saturated(&finalists[e.ci].model, &features, n_rows))
+            .collect();
+        let mut keyed: Vec<(usize, bool, Entry)> = pool
+            .into_iter()
+            .zip(padded)
+            .map(|(e, p)| (rank(e.v), p, e))
+            .collect();
+        keyed.sort_by_key(|(r, p, _)| (*r, *p));
+        let mut pool: Vec<Entry> = keyed.into_iter().map(|(_, _, e)| e).collect();
         if let Some(top_resid) = pool.first().map(|e| e.resid) {
             for e in pool.iter_mut().skip(1) {
                 if e.v == "exact" && e.resid > NOISE_FLOOR_K * top_resid.max(1.0 - EXACT_EXIT_R2) {
@@ -1490,6 +1612,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             crate::guard::within_rounding(&r.model, &features, &target, n_rows)
         }
     });
+    if !floor_estimated {
+        warnings.push(crate::output::FLOOR_NOT_ESTIMATED.to_string());
+    }
     if top_verdict == "exact" && !features_exact && !exact_as_settings {
         warnings
             .push(
