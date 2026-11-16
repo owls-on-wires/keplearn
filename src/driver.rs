@@ -13,6 +13,10 @@ pub struct Config {
     pub dump_candidates_path: String,
     pub out_path: String,
     pub pretty: bool,
+    pub format: String,
+    pub input_warnings: Vec<String>,
+    pub verbose: bool,
+    pub timing: bool,
 }
 
 pub(crate) fn split_row(line: &str, delim: char) -> Vec<String> {
@@ -49,10 +53,72 @@ pub(crate) struct Ingest {
     pub(crate) target: Vec<f64>,
     pub(crate) n_cols: usize,
     pub(crate) warnings: Vec<String>,
+    pub(crate) q_features: Vec<Vec<f64>>,
+    pub(crate) q_target: Vec<f64>,
+    pub(crate) names: Vec<String>,
+}
+
+pub(crate) fn cell_sig(s: &str) -> usize {
+    let t = s.trim().trim_start_matches(['+', '-']);
+    let mant = t.split(['e', 'E']).next().unwrap_or("");
+    if mant.is_empty() || !mant.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return 0;
+    }
+    let digits: String = mant.chars().filter(|c| c.is_ascii_digit()).collect();
+    digits.trim_start_matches('0').len()
+}
+
+pub(crate) fn cell_quantum(s: &str) -> f64 {
+    let t = s.trim().trim_start_matches(['+', '-']);
+    let (mant, exp) = match t.find(['e', 'E']) {
+        Some(i) => (&t[..i], t[i + 1..].parse::<i32>().unwrap_or(0)),
+        None => (t, 0),
+    };
+    if mant.is_empty() || !mant.chars().all(|c| c.is_ascii_digit() || c == '.') {
+        return 0.0;
+    }
+    let decimals = mant.find('.').map_or(0, |i| (mant.len() - i - 1) as i32);
+    10f64.powi(exp - decimals)
+}
+
+fn printable(s: &str) -> String {
+    let mut out: String = s
+        .chars()
+        .take(80)
+        .map(|c| {
+            if c.is_control() || c == '\u{fffd}' {
+                format!("\\u{{{:x}}}", c as u32)
+            } else {
+                c.to_string()
+            }
+        })
+        .collect();
+    if s.chars().count() > 80 {
+        out.push('…');
+    }
+    out
 }
 
 pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
+    let head: String = input.chars().take(4096).collect();
+    let bad = head
+        .chars()
+        .filter(|c| {
+            *c == '\0' || *c == '\u{fffd}' || (c.is_control() && !matches!(c, '\n' | '\r' | '\t'))
+        })
+        .count();
+    if bad * 10 > head.chars().count().max(1) {
+        return Err(
+            "the input is not text (binary bytes); expected a TSV or CSV table with a header row"
+                .into(),
+        );
+    }
+    if matches!(input.trim_start().chars().next(), Some('{') | Some('[')) {
+        return Err(
+            "the input looks like JSON; expected a TSV or CSV table with a header row".into(),
+        );
+    }
     let lines: Vec<&str> = input.lines().collect();
     if lines.len() < 2 {
         return Err(
@@ -67,7 +133,10 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
         ','
     } else {
         return Err(
-            "no tab or comma delimiter in the header row; expected TSV or CSV input".into(),
+            format!(
+                "the header has a single column ('{}'); a table needs the target and at least one feature column, separated by tabs or commas",
+                printable(head_line.trim())
+            ),
         );
     };
     let header: Vec<String> = split_row(head_line, delim);
@@ -84,6 +153,17 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
             ));
         }
     }
+    if header.iter().all(|h| h.trim().parse::<f64>().is_ok())
+        && !header.iter().any(|h| h.trim() == target_col)
+    {
+        return Err(
+            format!(
+                "the first row ({}) holds numbers, not column names; add a header row naming the columns (the target '{}' among them)",
+                printable(& header.iter().map(| h | h.trim()).collect::< Vec < _ >> ()
+                .join(", ")), printable(target_col)
+            ),
+        );
+    }
     let target_idx = header
         .iter()
         .position(|h| h.trim() == target_col)
@@ -93,18 +173,38 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                 target_col,
                 header
                     .iter()
-                    .map(|h| h.trim())
+                    .map(|h| printable(h.trim()))
                     .collect::<Vec<_>>()
                     .join(", ")
             )
         })?;
-    let feat_idx: Vec<usize> = (0..header.len()).filter(|&i| i != target_idx).collect();
+    let numeric = |i: usize| {
+        lines[1..].iter().any(|l| {
+            let vals = split_row(l.trim_end_matches('\r'), delim);
+            vals.len() == header.len() && vals[i].trim().parse::<f64>().is_ok_and(|v| v.is_finite())
+        })
+    };
+    let mut feat_idx: Vec<usize> = Vec::new();
+    for i in (0..header.len()).filter(|&i| i != target_idx) {
+        if numeric(i) {
+            feat_idx.push(i);
+        } else {
+            warnings.push(format!(
+                "column '{}' has no numeric values; it is dropped",
+                header[i].trim()
+            ));
+        }
+    }
     let n_cols = feat_idx.len();
     if n_cols == 0 {
-        return Err("input has a target column but no feature columns".into());
+        return Err("input has a target column but no numeric feature columns".into());
     }
     let mut features: Vec<Vec<f64>> = vec![Vec::new(); n_cols];
     let mut target: Vec<f64> = Vec::new();
+    let mut q_features: Vec<Vec<f64>> = vec![Vec::new(); n_cols];
+    let mut q_target: Vec<f64> = Vec::new();
+    let mut s_features: Vec<Vec<usize>> = vec![Vec::new(); n_cols];
+    let mut s_target: Vec<usize> = Vec::new();
     let mut skipped = 0usize;
     for line in &lines[1..] {
         let line = line.trim_end_matches('\r');
@@ -140,8 +240,12 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
         }
         for (j, v) in fv.into_iter().enumerate() {
             features[j].push(v);
+            q_features[j].push(cell_quantum(&vals[feat_idx[j]]));
+            s_features[j].push(cell_sig(&vals[feat_idx[j]]));
         }
         target.push(tv);
+        q_target.push(cell_quantum(&vals[target_idx]));
+        s_target.push(cell_sig(&vals[target_idx]));
     }
     let n_rows = target.len();
     if skipped > 0 {
@@ -154,44 +258,77 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     if n_rows == 0 {
         return Err("no usable data rows".into());
     }
+    let names: Vec<String> = feat_idx
+        .iter()
+        .map(|&i| header[i].trim().to_string())
+        .collect();
+    fn column_quanta(v: &[f64], q: &mut [f64], sig: &[usize]) {
+        let n = q.iter().filter(|x| **x > 0.0).count();
+        if n == 0 {
+            return;
+        }
+        let qa = q
+            .iter()
+            .copied()
+            .filter(|x| *x > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        let abs_share = q
+            .iter()
+            .filter(|x| **x > 0.0 && (**x - qa).abs() <= 1e-9 * qa)
+            .count();
+        let mut counts: std::collections::HashMap<usize, usize> = std::collections::HashMap::new();
+        for &d in sig.iter().filter(|d| **d > 0) {
+            *counts.entry(d).or_insert(0) += 1;
+        }
+        let (smode, rel_share) = counts
+            .iter()
+            .max_by_key(|(d, c)| (**c, **d))
+            .map(|(d, c)| (*d, *c))
+            .unwrap_or((0, 0));
+        for (x, qq) in v.iter().zip(q.iter_mut()) {
+            if *qq == 0.0 {
+                continue;
+            }
+            *qq = if abs_share >= rel_share || *x == 0.0 || smode == 0 {
+                qa
+            } else {
+                10f64.powi(x.abs().log10().floor() as i32 - smode as i32 + 1)
+            };
+        }
+    }
+    for ((c, q), sg) in features.iter().zip(q_features.iter_mut()).zip(&s_features) {
+        column_quanta(c, q, sg);
+    }
+    column_quanta(&target, &mut q_target, &s_target);
     Ok(Ingest {
         features,
         target,
         n_cols,
         warnings,
+        q_features,
+        q_target,
+        names,
     })
 }
 
 pub fn run(cfg: Config) {
-    let Config {
-        top_k,
-        sample,
-        target_col,
-        quick_n,
-        timeout_ms,
-        max_depth,
-        trace_path,
-        dump_candidates_path,
-        out_path,
-        pretty,
-        ..
-    } = cfg;
-    let eff_max_depth = max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH);
-    if !trace_path.is_empty() {
+    if !cfg.trace_path.is_empty() {
         let f = match fs::OpenOptions::new()
             .create(true)
             .append(true)
-            .open(&trace_path)
+            .open(&cfg.trace_path)
         {
             Ok(f) => f,
             Err(e) => {
-                eprintln!("keplearn: cannot open trace file '{}': {}", trace_path, e);
+                eprintln!(
+                    "keplearn: cannot open trace file '{}': {}",
+                    cfg.trace_path, e
+                );
                 std::process::exit(1);
             }
         };
         let _ = TRACER.set(Mutex::new(BufWriter::new(f)));
     }
-    let global_max_stack = 2usize;
     let mut raw = Vec::new();
     if let Err(e) = std::io::stdin()
         .take(INPUT_BYTE_CAP + 1)
@@ -207,24 +344,143 @@ pub fn run(cfg: Config) {
         );
         std::process::exit(1);
     }
-    let input = String::from_utf8_lossy(&raw);
-    let ing = match ingest(&input, &target_col) {
-        Ok(v) => v,
+    let mut cfg = cfg;
+    let input = match String::from_utf8(raw) {
+        Ok(s) => s,
+        Err(e) => {
+            cfg.input_warnings.push(
+                "the input is not valid UTF-8; undecodable bytes in names are shown as \u{fffd}"
+                    .to_string(),
+            );
+            String::from_utf8_lossy(e.as_bytes()).into_owned()
+        }
+    };
+    let out_path = cfg.out_path.clone();
+    let format = cfg.format.clone();
+    let rendered = match run_text(&input, cfg) {
+        Ok(r) => r,
         Err(e) => {
             eprintln!("keplearn: {}", e);
             std::process::exit(1);
         }
     };
+    let rendered = if format == "summary" {
+        crate::summary::render(&rendered)
+    } else {
+        rendered
+    };
+    if out_path.is_empty() {
+        print!("{}", rendered);
+    } else if let Err(e) = fs::write(&out_path, &rendered) {
+        eprintln!("keplearn: cannot write output file '{}': {}", out_path, e);
+        std::process::exit(1);
+    }
+}
+
+fn constant_target(target: &[f64]) -> Option<f64> {
+    let first = *target.first()?;
+    (first.is_finite() && target.iter().all(|v| *v == first)).then_some(first)
+}
+
+pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
+    let Config {
+        top_k,
+        sample,
+        target_col,
+        quick_n,
+        timeout_ms,
+        max_depth,
+        dump_candidates_path,
+        pretty,
+        input_warnings: cfg_input_warnings,
+        verbose,
+        timing,
+        ..
+    } = cfg;
+    crate::output::set_verbose(verbose);
+    let eff_max_depth = max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH);
+    crate::guard::set_floor(0.0);
+    let global_max_stack = 2usize;
+    let mut ing = ingest(input, &target_col)?;
+    ing.warnings.splice(0..0, cfg_input_warnings);
     for w in &ing.warnings {
         eprintln!("keplearn: {}", w);
     }
+    let n_rows_in = ing.target.len();
     let Ingest {
         mut features,
         mut target,
         n_cols,
-        ..
+        mut q_features,
+        mut q_target,
+        names,
+        warnings: ingest_warnings,
     } = ing;
     let n_rows = target.len();
+    let few = n_rows < fit_min_rows(1);
+    let constant = constant_target(&target).filter(|_| n_rows >= 2);
+    if constant.is_some() || few {
+        let mut warnings = ingest_warnings.clone();
+        let (results, verdict, reason) = match constant {
+            Some(v) => {
+                warnings.push(format!(
+                    "the target is {} on every row; nothing to search",
+                    crate::output::tidy_number(v, 13)
+                ));
+                (
+                    vec![crate::output::ResultObj::constant(
+                        v,
+                        "exact",
+                        Some(usize::from(!crate::guard::structural_constant(v))),
+                    )],
+                    "exact",
+                    None,
+                )
+            }
+            None => (
+                Vec::new(),
+                "no law found",
+                Some(format!(
+                    "the table has {} data row{}; a law with a single constant needs at least {}",
+                    n_rows,
+                    if n_rows == 1 { "" } else { "s" },
+                    fit_min_rows(1)
+                )),
+            ),
+        };
+        let oj = crate::output::Envelope {
+            results,
+            verdict,
+            reason,
+            stopped_by: if constant.is_some() {
+                "exact_exit"
+            } else {
+                "frontier_exhausted"
+            },
+            validation: if n_rows >= HOLDOUT_MIN_ROWS {
+                "holdout"
+            } else {
+                "leave-one-out"
+            },
+            noise_floor: 0.0,
+            target: &target_col,
+            columns: &names,
+            rows: n_rows_in,
+            warnings: &warnings,
+            time_ms: timing.then_some(0),
+        }
+        .json();
+        let mut rendered = if pretty { json_pretty(&oj) } else { oj };
+        rendered.push('\n');
+        return Ok(rendered);
+    }
+    let negated =
+        target.iter().any(|v| v.is_finite()) && target.iter().all(|v| !v.is_finite() || *v < 0.0);
+    if negated {
+        for v in target.iter_mut() {
+            *v = -*v;
+        }
+    }
     let holdout_n_full = if n_rows >= HOLDOUT_MIN_ROWS {
         n_rows / HOLDOUT_FRAC_DEN
     } else {
@@ -247,24 +503,36 @@ pub fn run(cfg: Config) {
             let reordered: Vec<f64> = idx.iter().map(|&k| col[k]).collect();
             *col = reordered;
         }
+        q_target = idx.iter().map(|&k| q_target[k]).collect();
+        for col in q_features.iter_mut() {
+            *col = idx.iter().map(|&k| col[k]).collect();
+        }
     }
+    crate::guard::set_quanta(&q_features, &q_target);
     let sample_n = sample.min(train_n.max(1));
     let hold_n = if holdout_n_full >= HOLDOUT_MIN_ACTIVE {
         holdout_n_full.min(HOLDOUT_MAX)
     } else {
         0
     };
-    eprintln!(
-        "Data: {} rows x {} cols, sample={}, holdout={}",
-        n_rows, n_cols, sample_n, hold_n
-    );
+    if crate::output::verbose() {
+        eprintln!(
+            "Data: {} rows x {} cols, sample={}, holdout={}",
+            n_rows, n_cols, sample_n, hold_n
+        );
+    }
     trace(&format!(
         "{{\"ev\":\"start\",\"n_cols\":{},\"n_rows\":{}}}",
         n_cols, n_rows
     ));
     let mut evaluator = Evaluator::new(global_max_stack, sample_n.max(hold_n));
     let t0 = Instant::now();
-    arm_deadline(timeout_ms);
+    let search_ms = if timeout_ms > 0 {
+        ((timeout_ms as f64 * SEARCH_SHARE) as u64).max(1)
+    } else {
+        0
+    };
+    arm_deadline(search_ms);
     let n_evaluated: u64 = 0;
     let qn = quick_n.min(sample_n);
     let h_lo = train_n;
@@ -312,6 +580,8 @@ pub fn run(cfg: Config) {
             seq: 0,
             desc: "y".to_string(),
             forced_finalist: Vec::new(),
+            basis_ok: false,
+            product_ok: false,
         });
     }
     let mut expansions = [0usize; MAX_DEPTH + 1];
@@ -363,12 +633,13 @@ pub fn run(cfg: Config) {
         }
     }
     let mut early = false;
+    let mut bound: Option<usize> = None;
     let mut timed_out = false;
     let mut turn_ctr: u64 = 0;
     let mut any_expanded = false;
     let mut lane;
     'main: loop {
-        if timeout_ms > 0 && any_expanded && t0.elapsed().as_millis() as u64 >= timeout_ms {
+        if search_ms > 0 && any_expanded && t0.elapsed().as_millis() as u64 >= search_ms {
             timed_out = true;
             break;
         }
@@ -386,6 +657,9 @@ pub fn run(cfg: Config) {
             let Some(n) = frontier.pop_lane(lane) else {
                 break 'main;
             };
+            if bound.is_some_and(|b| n.complexity >= b) {
+                continue;
+            }
             let depth_cap = depth_cap_at(n.depth, n_cols);
             if expansions[n.depth] >= depth_cap {
                 continue;
@@ -403,6 +677,35 @@ pub fn run(cfg: Config) {
         for (model, cr2) in node.forced_finalist.clone() {
             if let Ok(parsed) = Parser::parse(&model) {
                 let nodes = parsed.node_count();
+                if cr2 >= EXACT_EXIT_R2 {
+                    let conf = if hold_n > 0 {
+                        holdout_model_r2(
+                            &model,
+                            &features,
+                            &target,
+                            h_lo,
+                            h_hi,
+                            &ho_keep,
+                            ho_min_rows,
+                            &mut evaluator,
+                        )
+                        .map(|(rh, _)| cr2.min(rh))
+                    } else {
+                        Some(cr2)
+                    };
+                    if conf.is_some_and(|v| v >= EXACT_EXIT_R2) {
+                        match crate::guard::exit_check(&model, &features, &target, n_cols, train_n)
+                        {
+                            Some((_, true)) => {
+                                best_confirmed = best_confirmed.max(EXACT_EXIT_R2);
+                            }
+                            Some((nodes, false)) => {
+                                bound = Some(bound.map_or(nodes, |b: usize| b.min(nodes)));
+                            }
+                            None => {}
+                        }
+                    }
+                }
                 if trace_enabled() {
                     trace(
                         &format!(
@@ -490,7 +793,12 @@ pub fn run(cfg: Config) {
                         )
                         .map(|(rh, _)| c.gate_r2.min(rh))
                     } else {
-                        Some(c.gate_r2)
+                        match crate::guard::exit_check(
+                            &c.model, &features, &target, n_cols, train_n,
+                        ) {
+                            Some((_, true)) => Some(c.gate_r2),
+                            _ => None,
+                        }
                     };
                     if let Some(v) = conf {
                         if v > best_confirmed {
@@ -526,10 +834,59 @@ pub fn run(cfg: Config) {
         if matches!(node.chain.last(), Some(Red::Mat { .. })) {
             continue;
         }
-        let children = expand_children(&node, &features, n_cols, sample_n, qn, &mut seq);
+        let mut children = expand_children(&node, &features, n_cols, sample_n, qn, &mut seq);
+        if node.depth == 0 {
+            let base_inputs: Vec<&[f64]> = features.iter().map(|c| &c[..sample_n]).collect();
+            let basis = crate::fit::build_probe_basis(&base_inputs, sample_n);
+            let rows: Vec<usize> = if sample_n > 256 {
+                (0..256).map(|k| k * sample_n / 256).collect()
+            } else {
+                (0..sample_n).collect()
+            };
+            let atoms = crate::fit::library_atoms(&features, n_cols, &rows);
+            let score = |t: &[f64]| {
+                let tr: Vec<f64> = rows.iter().map(|&r| t[r]).collect();
+                crate::fit::joint_probe(t, &base_inputs, &basis)
+                    .max(crate::fit::best_atom_r2(&tr, &atoms))
+            };
+            let mut ranked: Vec<(f64, usize)> = children
+                .iter()
+                .enumerate()
+                .filter(|(_, ch)| {
+                    matches!(
+                        ch.chain.last(),
+                        Some(Red::Shell { .. }) | Some(Red::Div { .. })
+                    )
+                })
+                .map(|(i, ch)| (score(&ch.target), i))
+                .collect();
+            ranked.sort_by(|a, b| {
+                b.0.partial_cmp(&a.0)
+                    .unwrap_or(std::cmp::Ordering::Equal)
+                    .then(a.1.cmp(&b.1))
+            });
+            for ch in children.iter_mut() {
+                if matches!(ch.chain.last(), Some(Red::Shell { .. })) {
+                    ch.basis_ok = true;
+                    ch.product_ok = true;
+                }
+            }
+            let rest: Vec<usize> = ranked
+                .iter()
+                .map(|&(_, i)| i)
+                .filter(|&i| !children[i].basis_ok)
+                .collect();
+            for (rank, &i) in rest.iter().take(BASIS_DEPTH1_CAP).enumerate() {
+                children[i].basis_ok = true;
+                children[i].product_ok = rank < PRODUCT_DEPTH1_CAP;
+            }
+        }
         for ch in children {
             frontier.push(ch);
         }
+    }
+    if crate::output::verbose() {
+        eprintln!("stage search done: {} ms", t0.elapsed().as_millis());
     }
     for (tier, slot) in pareto.iter().enumerate() {
         let Some((fr2, c)) = slot else { continue };
@@ -547,6 +904,137 @@ pub fn run(cfg: Config) {
         if !already {
             finalists.push(c.clone());
         }
+    }
+    let floor = {
+        let t: Vec<f64> = if negated {
+            target[..train_n].iter().map(|v| -v).collect()
+        } else {
+            target[..train_n].to_vec()
+        };
+        let feats_tr: Vec<Vec<f64>> = features.iter().map(|c| c[..train_n].to_vec()).collect();
+        let mut scored: Vec<(f64, String)> = finalists
+            .iter()
+            .map(|c| {
+                let m = if negated {
+                    format!("(-({}))", c.model)
+                } else {
+                    c.model.clone()
+                };
+                (full_model_r2(&m, &feats_tr, &t, &mut evaluator), m)
+            })
+            .filter(|(r, _)| r.is_finite())
+            .collect();
+        scored.sort_by(|a, b| b.0.partial_cmp(&a.0).unwrap_or(CmpOrd::Equal));
+        let best_fit = scored.first().map_or(0.0, |s| s.0);
+        let f = scored
+            .iter()
+            .filter(|(r, _)| best_fit >= FLOOR_MIN_FIT && *r >= best_fit - FLOOR_FIT_SLACK)
+            .take(FLOOR_FINALISTS)
+            .map(|(_, m)| {
+                rounding_floor(
+                    m,
+                    &features,
+                    &t,
+                    &q_features,
+                    &q_target,
+                    train_n,
+                    &mut evaluator,
+                )
+            })
+            .filter(|f| *f > 0.0)
+            .fold(f64::INFINITY, f64::min);
+        if f.is_finite() && f > NOISE_FLOOR_MIN {
+            f
+        } else {
+            0.0
+        }
+    };
+    crate::guard::set_floor(floor);
+    if crate::output::verbose() {
+        eprintln!("stage floor: {} ms", t0.elapsed().as_millis());
+    }
+    if negated {
+        for v in target.iter_mut() {
+            *v = -*v;
+        }
+        for c in finalists.iter_mut() {
+            c.model = format!("(-({}))", c.model);
+            c.root_raw = false;
+        }
+        trace(&"{\"ev\":\"negated\"}".to_string());
+    }
+    {
+        let mut answers: std::collections::HashMap<String, Option<(String, String)>> =
+            std::collections::HashMap::new();
+        let mut best_for: std::collections::HashMap<String, usize> =
+            std::collections::HashMap::new();
+        let mut kept: Vec<Cand> = Vec::with_capacity(finalists.len());
+        let mut dropped = 0usize;
+        arm_deadline_at(
+            (timeout_ms > 0).then(|| t0 + std::time::Duration::from_millis(timeout_ms)),
+        );
+        finalists.sort_by(|a, b| {
+            a.nodes
+                .cmp(&b.nodes)
+                .then(b.gate_r2.partial_cmp(&a.gate_r2).unwrap_or(CmpOrd::Equal))
+        });
+        for mut c in finalists.drain(..) {
+            if !kept.is_empty() && out_of_time() {
+                dropped += 1;
+                continue;
+            }
+            let tc = Instant::now();
+            let ans = answers
+                .entry(c.model.clone())
+                .or_insert_with(|| {
+                    crate::guard::canonical_answer(&c.model, &features, &target, n_cols, train_n)
+                })
+                .clone();
+            if crate::output::verbose() && tc.elapsed().as_millis() > 1000 {
+                eprintln!(
+                    "canonical form took {} ms: {}",
+                    tc.elapsed().as_millis(),
+                    c.model
+                );
+            }
+            let Some((st, fitted)) = ans else {
+                dropped += 1;
+                continue;
+            };
+            let Ok(p) = Parser::parse(&fitted) else {
+                dropped += 1;
+                continue;
+            };
+            if trace_enabled() && fitted != c.model {
+                trace(&format!(
+                    "{{\"ev\":\"canonical\",\"from\":\"{}\",\"to\":\"{}\"}}",
+                    json_esc(&c.model),
+                    json_esc(&fitted)
+                ));
+            }
+            c.model = crate::output::tidy(&fitted, 13);
+            c.nodes = p.node_count();
+            c.root_raw = false;
+            match best_for.get(&st) {
+                Some(&k) if kept[k].gate_r2 >= c.gate_r2 => {}
+                Some(&k) => kept[k] = c,
+                None => {
+                    best_for.insert(st, kept.len());
+                    kept.push(c);
+                }
+            }
+        }
+        if trace_enabled() {
+            trace(&format!(
+                "{{\"ev\":\"canonical_stage\",\"kept\":{},\"dropped\":{}}}",
+                kept.len(),
+                dropped
+            ));
+        }
+        finalists = kept;
+    }
+    if crate::output::verbose() {
+        eprintln!("stage canonical: {} ms", t0.elapsed().as_millis());
     }
     let mut ho_r2: Vec<Option<f64>> = vec![None; finalists.len()];
     let mut ho_rows: Vec<usize> = vec![0; finalists.len()];
@@ -573,7 +1061,55 @@ pub fn run(cfg: Config) {
         }
     }
     let _ = hn_f;
-    let abstain = hold_n > 0 && !dl.iter().any(|d| d.is_some());
+    let feats_tr: Vec<Vec<f64>> = features.iter().map(|c| c[..train_n].to_vec()).collect();
+    let fixed_r2 = |model: &str, ev: &mut Evaluator| -> Option<f64> {
+        (crate::guard::all_constants(model) == Some(0))
+            .then(|| full_model_r2(model, &feats_tr, &target[..train_n], ev))
+            .filter(|r| r.is_finite())
+    };
+    let mut loo: Vec<Option<f64>> = vec![None; finalists.len()];
+    if hold_n == 0 {
+        for (ci, c) in finalists.iter().enumerate() {
+            let fixed = fixed_r2(&c.model, &mut evaluator).map(|r| (r, train_n));
+            let Some((r2, rows)) = fixed
+                .or_else(|| loo_model_r2(&c.model, &features, &target, train_n, &mut evaluator))
+            else {
+                continue;
+            };
+            if (rows as f64) < LOO_COVER * train_n as f64 {
+                continue;
+            }
+            loo[ci] = Some(r2);
+            ho_r2[ci] = Some(r2);
+            ho_rows[ci] = rows;
+            if r2 > 0.0 {
+                dl[ci] = Some(mdl_dl(rows as f64, r2, c.nodes as f64));
+            }
+        }
+    }
+    let law_shaped = |model: &str| {
+        crate::guard::fits_each_row(model, &features, &target, n_rows)
+            && crate::guard::well_conditioned(model, &features, n_rows)
+    };
+    if crate::output::verbose() {
+        eprintln!("stage scoring: {} ms", t0.elapsed().as_millis());
+    }
+    let exact_key: Vec<Option<(usize, usize)>> = finalists
+        .iter()
+        .enumerate()
+        .map(|(ci, c)| match loo[ci] {
+            Some(r2)
+                if r2 >= EXACT_EXIT_R2.min(1.0 - NOISE_FLOOR_K * floor) && law_shaped(&c.model) =>
+            {
+                Some((
+                    crate::guard::free_constants(&c.model).unwrap_or(usize::MAX),
+                    c.nodes,
+                ))
+            }
+            _ => None,
+        })
+        .collect();
+    let abstain = !dl.iter().any(|d| d.is_some()) && (hold_n > 0 || !finalists.is_empty());
     let train_mean = {
         let (mut s, mut c) = (0.0f64, 0usize);
         for k in 0..train_n {
@@ -590,98 +1126,22 @@ pub fn run(cfg: Config) {
         }
     };
     let mut order: Vec<usize> = (0..finalists.len()).collect();
-    order.sort_by(|&a, &b| match (dl[a], dl[b]) {
-        (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(CmpOrd::Equal).then(a.cmp(&b)),
+    order.sort_by(|&a, &b| match (exact_key[a], exact_key[b]) {
+        (Some(x), Some(y)) => x.cmp(&y).then(a.cmp(&b)),
         (Some(_), None) => CmpOrd::Less,
         (None, Some(_)) => CmpOrd::Greater,
-        (None, None) => finalists[b]
-            .gate_r2
-            .partial_cmp(&finalists[a].gate_r2)
-            .unwrap_or(CmpOrd::Equal)
-            .then(finalists[a].nodes.cmp(&finalists[b].nodes))
-            .then(a.cmp(&b)),
+        (None, None) => match (dl[a], dl[b]) {
+            (Some(x), Some(y)) => x.partial_cmp(&y).unwrap_or(CmpOrd::Equal).then(a.cmp(&b)),
+            (Some(_), None) => CmpOrd::Less,
+            (None, Some(_)) => CmpOrd::Greater,
+            (None, None) => finalists[b]
+                .gate_r2
+                .partial_cmp(&finalists[a].gate_r2)
+                .unwrap_or(CmpOrd::Equal)
+                .then(finalists[a].nodes.cmp(&finalists[b].nodes))
+                .then(a.cmp(&b)),
+        },
     });
-    if hold_n > 0 && !abstain {
-        let emit_idxs: Vec<usize> = order.iter().take(top_k).copied().collect();
-        for ci in emit_idxs {
-            if finalists[ci].root_raw {
-                continue;
-            }
-            let Some(rh) = ho_r2[ci] else { continue };
-            if let Some(m) = snap_model_constants(
-                &finalists[ci].model,
-                rh,
-                &features,
-                &target,
-                h_lo,
-                h_hi,
-                &ho_keep,
-                ho_min_rows,
-                &mut evaluator,
-            ) {
-                if trace_enabled() {
-                    trace(&format!(
-                        "{{\"ev\":\"snap\",\"from\":\"{}\",\"to\":\"{}\"}}",
-                        json_esc(&finalists[ci].model),
-                        json_esc(&m)
-                    ));
-                }
-                finalists[ci].model = m;
-            }
-        }
-    }
-    if !abstain {
-        for &ci in order.iter().take(top_k) {
-            if let Some(m) = simplify_model(&finalists[ci].model) {
-                if trace_enabled() {
-                    trace(&format!(
-                        "{{\"ev\":\"simplify\",\"from\":\"{}\",\"to\":\"{}\"}}",
-                        json_esc(&finalists[ci].model),
-                        json_esc(&m)
-                    ));
-                }
-                if let Ok(p) = Parser::parse(&m) {
-                    finalists[ci].nodes = p.node_count();
-                }
-                finalists[ci].model = m;
-            }
-        }
-    }
-    if !abstain {
-        for &ci in order.iter().take(top_k) {
-            let Some((a, b)) =
-                full_model_affine_fit(&finalists[ci].model, &features, &target, &mut evaluator)
-            else {
-                continue;
-            };
-            if affine_trivial(a, b) {
-                continue;
-            }
-            let m2 = format!(
-                "({}*({})+{})",
-                fmt_const(a),
-                finalists[ci].model,
-                fmt_const(b)
-            );
-            let base = full_model_r2(&finalists[ci].model, &features, &target, &mut evaluator);
-            let recal = full_model_r2(&m2, &features, &target, &mut evaluator);
-            if recal > base + RECAL_MIN_GAIN {
-                if trace_enabled() {
-                    trace(
-                        &format!(
-                            "{{\"ev\":\"recal\",\"from\":\"{}\",\"to\":\"{}\",\"r2_from\":{},\"r2_to\":{}}}",
-                            json_esc(& finalists[ci].model), json_esc(& m2),
-                            jnum_rt(base), jnum_rt(recal)
-                        ),
-                    );
-                }
-                if let Ok(p) = Parser::parse(&m2) {
-                    finalists[ci].nodes = p.node_count();
-                }
-                finalists[ci].model = m2;
-            }
-        }
-    }
     let mut out_r2: Vec<Option<f64>> = vec![None; finalists.len()];
     let mut out_ho: Vec<Option<f64>> = vec![None; finalists.len()];
     if !abstain {
@@ -704,41 +1164,88 @@ pub fn run(cfg: Config) {
                     &mut evaluator,
                 )
                 .map(|(rh, _)| rh);
+            } else {
+                out_ho[ci] = loo[ci];
             }
         }
     }
+    if crate::output::verbose() {
+        eprintln!("stage out scoring: {} ms", t0.elapsed().as_millis());
+    }
     let elapsed = t0.elapsed();
     let chosen_idx: Option<usize> = order.first().copied();
-    if let Some(ci) = chosen_idx {
+    if let Some(ci) = chosen_idx.filter(|_| crate::output::verbose()) {
         eprintln!(
             "Picked: {} :: {} (emitted R2={:?}, search R2={:.6}, holdout={:?})",
             finalists[ci].desc, finalists[ci].model, out_r2[ci], finalists[ci].fit_r2, out_ho[ci]
         );
     }
-    eprintln!(
-        "Total: {:.1}ms, {} evals, {} searches, best gate R2={:.6}, {} finalists",
-        elapsed.as_secs_f64() * 1000.0,
-        n_evaluated,
-        SEARCH_COUNT.load(AtomicOrdering::Relaxed),
-        best_gate,
-        finalists.len()
-    );
-    use std::fmt::Write as FmtWrite;
-    let mut oj = String::new();
-    let _ = write!(oj, "{{\"results\":[");
-    if abstain {
-        let mc = fmt_const(train_mean);
-        let _ = write!(
-            oj,
-            "{{\"expr\":\"{}\",\"r2\":0.0000000000,\"search_r2\":0.0000000000,\"holdout_r2\":null,\"scale\":1,\"offset\":0,\"columns\":[],\"factor\":\"direct\",\"model\":\"{}\"}}",
-            mc, mc
+    if crate::output::verbose() {
+        eprintln!(
+            "Total: {:.1}ms, {} evals, {} searches, best gate R2={:.6}, {} finalists",
+            elapsed.as_secs_f64() * 1000.0,
+            n_evaluated,
+            SEARCH_COUNT.load(AtomicOrdering::Relaxed),
+            best_gate,
+            finalists.len()
         );
+    }
+    let exact_r2 = EXACT_EXIT_R2.min(1.0 - NOISE_FLOOR_K * floor);
+    let dl_margin = (expansions.iter().sum::<usize>().max(1) as f64).ln();
+    let verdict_of = |score: Option<f64>, d: Option<f64>| -> &'static str {
+        match (score, d) {
+            (Some(r), _) if r >= exact_r2 => "exact",
+            (_, Some(d)) if d < -dl_margin => "approximate",
+            _ => "no law found",
+        }
+    };
+    let mut top_verdict: &'static str = "no law found";
+    let mut top_reason: Option<String> = None;
+    let mut results: Vec<crate::output::ResultObj> = Vec::new();
+    if abstain {
+        results.push(crate::output::ResultObj::constant(
+            train_mean,
+            "no law found",
+            Some(1),
+        ));
+        top_reason = Some(if finalists.is_empty() {
+            "the search found no candidate form".to_string()
+        } else {
+            format!("no candidate could be scored on {} rows", n_rows_in)
+        });
     } else {
         let identity_cols: Vec<usize> = (0..n_cols).collect();
-        for (i, &ci) in order.iter().take(top_k).enumerate() {
+        let mut seen_struct: std::collections::HashSet<String> = std::collections::HashSet::new();
+        let mut top_resid = f64::INFINITY;
+        for &ci in order.iter() {
+            if results.len() >= top_k {
+                break;
+            }
             let c = &finalists[ci];
-            if i > 0 {
-                let _ = write!(oj, ",");
+            let canon = crate::guard::canonical(&c.model, &target);
+            if let Some(st) = &canon {
+                if !seen_struct.insert(st.clone()) {
+                    continue;
+                }
+            }
+            let i = results.len();
+            if out_r2[ci].is_none() {
+                out_r2[ci] = Some(full_model_r2(&c.model, &features, &target, &mut evaluator));
+                if hold_n > 0 {
+                    out_ho[ci] = holdout_model_r2(
+                        &c.model,
+                        &features,
+                        &target,
+                        h_lo,
+                        h_hi,
+                        &ho_keep,
+                        ho_min_rows,
+                        &mut evaluator,
+                    )
+                    .map(|(rh, _)| rh);
+                } else {
+                    out_ho[ci] = loo[ci];
+                }
             }
             let (out_expr, out_cols, out_scale, out_offset): (&str, &[usize], f64, f64) =
                 if c.root_raw {
@@ -746,13 +1253,112 @@ pub fn run(cfg: Config) {
                 } else {
                     (&c.model, &identity_cols, 1.0, 0.0)
                 };
-            let _ = write!(
-                oj,
-                "{{\"expr\":\"{}\",\"r2\":{:.10},\"search_r2\":{:.10},\"holdout_r2\":{},\"scale\":{},\"offset\":{},\"columns\":{:?},\"factor\":\"direct\",\"model\":\"{}\"}}",
-                json_esc(out_expr), out_r2[ci].unwrap_or(- 1.0), c.fit_r2,
-                jopt_f(out_ho[ci]), out_scale, out_offset, out_cols, json_esc(& c.model)
-            );
+            let mut why: Option<String> = None;
+            let (score, d) = if hold_n == 0 {
+                match fixed_r2(&c.model, &mut evaluator).or_else(|| {
+                    crate::guard::loo_refit_r2(&c.model, &features, &target, n_cols, train_n)
+                }) {
+                    Some(r) => {
+                        let s = out_ho[ci].map_or(r, |o| o.min(r));
+                        (
+                            Some(s),
+                            (s > 0.0).then(|| mdl_dl(train_n as f64, s, c.nodes as f64)),
+                        )
+                    }
+                    None => {
+                        why = Some(match crate::guard::loo_rows_needed(&c.model) {
+                            Some(m) if train_n < m => {
+                                format!(
+                                        "{} rows are too few to check the best fit by leaving one row out (it needs {})",
+                                        train_n, m
+                                    )
+                            }
+                            _ => "the best fit could not be checked by leaving one row out"
+                                .to_string(),
+                        });
+                        (None, None)
+                    }
+                }
+            } else {
+                (out_ho[ci], dl[ci])
+            };
+            let resid = 1.0 - out_r2[ci].unwrap_or(-1.0);
+            let near_top = i == 0 || resid <= NOISE_FLOOR_K * top_resid.max(1.0 - EXACT_EXIT_R2);
+            let v = match verdict_of(score, d) {
+                "exact" if !near_top || !law_shaped(&c.model) => {
+                    if d.is_some_and(|d| d < -dl_margin) {
+                        "approximate"
+                    } else {
+                        "no law found"
+                    }
+                }
+                v => v,
+            };
+            if i == 0 {
+                top_resid = resid;
+            }
+            let free = if v == "exact" {
+                crate::guard::free_constants(&c.model)
+            } else {
+                crate::guard::all_constants(&c.model)
+            };
+            let v = match free {
+                Some(p) if train_n < fit_min_rows(p) => {
+                    why = Some(
+                        format!(
+                            "the best fit has {} constants; confirming it needs at least {} rows, the table has {}",
+                            p, fit_min_rows(p), train_n
+                        ),
+                    );
+                    "no law found"
+                }
+                _ => v,
+            };
+            if why.is_none() {
+                why = match v {
+                    "approximate" => {
+                        Some(
+                            "the best fit leaves residuals above the precision the cells are written to"
+                                .to_string(),
+                        )
+                    }
+                    "no law found" => {
+                        Some(
+                            format!(
+                                "the best fit (r2 = {:.4}) does not beat a constant by enough to be a law",
+                                out_r2[ci].unwrap_or(- 1.0)
+                            ),
+                        )
+                    }
+                    _ => None,
+                };
+            }
+            if i == 0 {
+                top_verdict = v;
+                top_reason = why;
+            }
+            let sym = crate::output::symbolic_model(&c.model);
+            results.push(crate::output::ResultObj {
+                expr: out_expr.to_string(),
+                model: c.model.clone(),
+                r2: out_r2[ci],
+                search_r2: Some(c.fit_r2),
+                holdout_r2: out_ho[ci],
+                scale: out_scale,
+                offset: out_offset,
+                columns: out_cols.to_vec(),
+                uses: crate::output::used_columns(&c.model, &names),
+                structure: canon.clone(),
+                canonical: Some(c.model.clone()),
+                verdict: v,
+                named: crate::output::named_model(&sym, &names),
+                symbolic: sym,
+                free_constants: free,
+            });
         }
+    }
+    if crate::output::verbose() {
+        eprintln!("stage results: {} ms", t0.elapsed().as_millis());
     }
     let stopped_by = if early {
         "exact_exit"
@@ -761,21 +1367,26 @@ pub fn run(cfg: Config) {
     } else {
         "frontier_exhausted"
     };
-    let _ = write!(
-        oj,
-        "],\"time_ms\":{},\"n_expressions\":0,\"n_evaluated\":{},\"stopped_by\":\"{}\"}}",
-        elapsed.as_millis(),
-        n_evaluated,
-        stopped_by
-    );
+    let oj = crate::output::Envelope {
+        results,
+        verdict: top_verdict,
+        reason: top_reason,
+        stopped_by,
+        validation: if hold_n > 0 {
+            "holdout"
+        } else {
+            "leave-one-out"
+        },
+        noise_floor: floor,
+        target: &target_col,
+        columns: &names,
+        rows: n_rows_in,
+        warnings: &ingest_warnings,
+        time_ms: timing.then(|| elapsed.as_millis()),
+    }
+    .json();
     let mut rendered = if pretty { json_pretty(&oj) } else { oj };
     rendered.push('\n');
-    if out_path.is_empty() {
-        print!("{}", rendered);
-    } else if let Err(e) = fs::write(&out_path, &rendered) {
-        eprintln!("keplearn: cannot write output file '{}': {}", out_path, e);
-        std::process::exit(1);
-    }
     if trace_enabled() {
         let (bdesc, bexpr, br2) = chosen_idx
             .map(|ci| {
@@ -880,4 +1491,5 @@ pub fn run(cfg: Config) {
             eprintln!("failed to write --dump-candidates file: {}", e);
         }
     }
+    Ok(rendered)
 }

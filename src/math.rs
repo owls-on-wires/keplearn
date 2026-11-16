@@ -66,43 +66,124 @@ pub(crate) fn masked_divide(
     vc
 }
 
-pub(crate) fn abs_corr(x: &[f64], y: &[f64], n: usize) -> f64 {
-    let (r2, _, _) = r2_score(&y[..n.min(y.len())], &x[..n.min(x.len())]);
-    if r2 > 0.0 {
-        r2.sqrt()
+pub(crate) fn loo_model_r2(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+    ev: &mut Evaluator,
+) -> Option<(f64, usize)> {
+    let parsed = Parser::parse(model).ok()?;
+    if parsed.arity() > features.len() || n == 0 {
+        return None;
+    }
+    let compiled = compile(&parsed);
+    ev.ensure_capacity(compiled.max_stack.max(2), n);
+    let vars: Vec<&[f64]> = features.iter().map(|col| &col[..n]).collect();
+    let pred = ev.eval(&compiled.ops, &vars, n).to_vec();
+    let rows: Vec<usize> = (0..n)
+        .filter(|&i| pred[i].is_finite() && target[i].is_finite())
+        .collect();
+    let k = rows.len();
+    if k < 3 {
+        return None;
+    }
+    let kf = k as f64;
+    let mm = rows.iter().map(|&i| pred[i]).sum::<f64>() / kf;
+    let ym = rows.iter().map(|&i| target[i]).sum::<f64>() / kf;
+    let sxx: f64 = rows.iter().map(|&i| (pred[i] - mm).powi(2)).sum();
+    let sxy: f64 = rows
+        .iter()
+        .map(|&i| (pred[i] - mm) * (target[i] - ym))
+        .sum();
+    let syy: f64 = rows.iter().map(|&i| (target[i] - ym).powi(2)).sum();
+    if !(sxx > 0.0) || !(syy > 0.0) {
+        return None;
+    }
+    let a = sxy / sxx;
+    let b = ym - a * mm;
+    let mut press = 0.0f64;
+    for &i in &rows {
+        let h = 1.0 / kf + (pred[i] - mm).powi(2) / sxx;
+        let e = target[i] - (a * pred[i] + b);
+        let d = 1.0 - h;
+        if !(d > 1e-12) {
+            return None;
+        }
+        press += (e / d).powi(2);
+    }
+    let r2 = 1.0 - press / syy;
+    r2.is_finite().then_some((r2, k))
+}
+
+pub(crate) fn rounding_floor(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    q_features: &[Vec<f64>],
+    q_target: &[f64],
+    n: usize,
+    ev: &mut Evaluator,
+) -> f64 {
+    let Some(var) = rounding_var_rows(model, features, q_features, q_target, n, ev) else {
+        return 0.0;
+    };
+    let ym = target[..n].iter().sum::<f64>() / n as f64;
+    let vy = target[..n].iter().map(|v| (v - ym) * (v - ym)).sum::<f64>() / n as f64;
+    if !(vy > 0.0) {
+        return 0.0;
+    }
+    let f = var.iter().filter(|x| x.is_finite()).sum::<f64>() / n as f64 / vy;
+    if f.is_finite() {
+        f
     } else {
         0.0
     }
 }
 
-pub(crate) fn combinations_capped(n: usize, k: usize, cap: usize) -> Vec<Vec<usize>> {
-    let mut result = Vec::new();
-    fn go(
-        start: usize,
-        n: usize,
-        k: usize,
-        cap: usize,
-        cur: &mut Vec<usize>,
-        out: &mut Vec<Vec<usize>>,
-    ) {
-        if out.len() >= cap {
-            return;
+pub(crate) fn rounding_var_rows(
+    model: &str,
+    features: &[Vec<f64>],
+    q_features: &[Vec<f64>],
+    q_target: &[f64],
+    n: usize,
+    ev: &mut Evaluator,
+) -> Option<Vec<f64>> {
+    let parsed = Parser::parse(model).ok()?;
+    if parsed.arity() > features.len() || n < 2 || q_target.len() < n {
+        return None;
+    }
+    let compiled = compile(&parsed);
+    ev.ensure_capacity(compiled.max_stack.max(2), n);
+    let mut var = vec![0.0f64; n];
+    for i in 0..n {
+        var[i] = q_target[i] * q_target[i] / 12.0;
+    }
+    for j in 0..features.len().min(q_features.len()) {
+        if q_features[j].iter().take(n).all(|q| *q == 0.0) {
+            continue;
         }
-        if cur.len() == k {
-            out.push(cur.clone());
-            return;
+        let h: Vec<f64> = (0..n)
+            .map(|i| 1e-6 * features[j][i].abs().max(1e-3))
+            .collect();
+        let mut up = features.to_vec();
+        let mut dn = features.to_vec();
+        for i in 0..n {
+            up[j][i] += h[i];
+            dn[j][i] -= h[i];
         }
-        for i in start..n {
-            cur.push(i);
-            go(i + 1, n, k, cap, cur, out);
-            cur.pop();
-            if out.len() >= cap {
-                return;
+        let vu: Vec<&[f64]> = up.iter().map(|c| &c[..n]).collect();
+        let pu = ev.eval(&compiled.ops, &vu, n).to_vec();
+        let vd: Vec<&[f64]> = dn.iter().map(|c| &c[..n]).collect();
+        let pd = ev.eval(&compiled.ops, &vd, n).to_vec();
+        for i in 0..n {
+            let d = (pu[i] - pd[i]) / (2.0 * h[i]);
+            if d.is_finite() {
+                var[i] += d * d * q_features[j][i] * q_features[j][i] / 12.0;
             }
         }
     }
-    go(0, n, k, cap, &mut Vec::new(), &mut result);
-    result
+    Some(var)
 }
 
 pub(crate) fn mdl_dl(hn_f: f64, rh: f64, nodes: f64) -> f64 {
@@ -263,44 +344,6 @@ pub(crate) fn full_model_r2(
     full_model_score(model, features, target, ev, plain_r2)
 }
 
-pub(crate) fn full_model_affine_fit(
-    model: &str,
-    features: &[Vec<f64>],
-    target: &[f64],
-    ev: &mut Evaluator,
-) -> Option<(f64, f64)> {
-    let n = target.len();
-    if n == 0 {
-        return None;
-    }
-    let parsed = Parser::parse(model).ok()?;
-    if parsed.arity() > features.len() {
-        return None;
-    }
-    let compiled = compile(&parsed);
-    ev.ensure_capacity(compiled.max_stack.max(2), n);
-    let vars: Vec<&[f64]> = features.iter().map(|col| &col[..n]).collect();
-    let pred = ev.eval(&compiled.ops, &vars, n);
-    let tt = target.iter().filter(|v| v.is_finite()).count();
-    let kept = (0..n)
-        .filter(|&i| target[i].is_finite() && pred[i].is_finite())
-        .count();
-    if kept * HOLDOUT_COVER_DEN < tt * HOLDOUT_COVER_NUM || kept < HOLDOUT_COVER_MIN {
-        return None;
-    }
-    let (_, a, b) = r2_score(target, pred);
-    (a.is_finite() && b.is_finite() && a != 0.0).then_some((a, b))
-}
-
-pub(crate) fn full_model_affine_r2(
-    model: &str,
-    features: &[Vec<f64>],
-    target: &[f64],
-    ev: &mut Evaluator,
-) -> f64 {
-    full_model_score(model, features, target, ev, |yt, yp| r2_score(yt, yp).0)
-}
-
 pub(crate) fn snap_value(v: f64) -> Option<f64> {
     if !v.is_finite() {
         return None;
@@ -344,8 +387,7 @@ pub(crate) fn snap_exp(b: f64) -> Option<f64> {
         return None;
     }
     let mut best: Option<(f64, f64)> = None;
-    for &q in EXP_DENOMS {
-        let s = (b * q as f64).round() / q as f64;
+    for s in std::iter::once(0.0).chain(crate::forms::nf::Q::ALL.iter().map(|q| q.val())) {
         let r = (b - s).abs();
         if best.is_none_or(|(br, _)| r < br) {
             best = Some((r, s));
@@ -354,107 +396,6 @@ pub(crate) fn snap_exp(b: f64) -> Option<f64> {
     match best {
         Some((r, s)) if r <= EXP_SNAP_TOL => Some(s),
         _ => None,
-    }
-}
-
-pub(crate) fn literal_spans(s: &str) -> Vec<(usize, usize, f64)> {
-    let b = s.as_bytes();
-    let mut out = Vec::new();
-    let mut i = 0usize;
-    while i < b.len() {
-        if b[i].is_ascii_digit() {
-            let prev = if i == 0 { b'\0' } else { b[i - 1] };
-            if prev.is_ascii_alphanumeric() || prev == b'_' {
-                while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
-                    i += 1;
-                }
-                continue;
-            }
-            let start = i;
-            while i < b.len() && (b[i].is_ascii_digit() || b[i] == b'.') {
-                i += 1;
-            }
-            if let Ok(v) = s[start..i].parse::<f64>() {
-                out.push((start, i, v));
-            }
-        } else {
-            i += 1;
-        }
-    }
-    out
-}
-
-pub(crate) fn apply_snaps(model: &str, snaps: &[(usize, usize, String)], mask: &[bool]) -> String {
-    let mut out = String::with_capacity(model.len() + 16);
-    let mut pos = 0usize;
-    for (k, &(a, b, ref rep)) in snaps.iter().enumerate() {
-        if !mask[k] {
-            continue;
-        }
-        out.push_str(&model[pos..a]);
-        out.push_str(rep);
-        pos = b;
-    }
-    out.push_str(&model[pos..]);
-    out
-}
-
-#[allow(clippy::too_many_arguments)]
-pub(crate) fn snap_model_constants(
-    model: &str,
-    base_rh: f64,
-    features: &[Vec<f64>],
-    target: &[f64],
-    h_lo: usize,
-    h_hi: usize,
-    ho_keep: &[bool],
-    ho_min_rows: usize,
-    ev: &mut Evaluator,
-) -> Option<String> {
-    let spans = literal_spans(model);
-    let mmax = spans
-        .iter()
-        .map(|&(_, _, v)| v.abs())
-        .fold(0.0f64, f64::max);
-    let snaps: Vec<(usize, usize, String)> = spans
-        .into_iter()
-        .filter_map(|(a, b, v)| {
-            let s = snap_value(v)
-                .or_else(|| (v != 0.0 && v.abs() <= SNAP_ZERO_FRAC * mmax).then_some(0.0))?;
-            Some((a, b, fmt_const(s)))
-        })
-        .collect();
-    if snaps.is_empty() || snaps.len() > SNAP_MAX_COUNT {
-        return None;
-    }
-    let slack = (1.0 - base_rh).max(0.0) * SNAP_HOLDOUT_SLACK + 1e-9;
-    let base_full = full_model_affine_r2(model, features, target, ev);
-    let full_slack = (1.0 - base_full).max(0.0) * SNAP_HOLDOUT_SLACK + 1e-9;
-    let verify = |m: &str, ev: &mut Evaluator| -> bool {
-        let ho_ok = holdout_model_r2(m, features, target, h_lo, h_hi, ho_keep, ho_min_rows, ev)
-            .map(|(rh, _)| rh >= base_rh - slack)
-            .unwrap_or(false);
-        ho_ok
-            && (base_full <= -1.0
-                || full_model_affine_r2(m, features, target, ev) >= base_full - full_slack)
-    };
-    let all = vec![true; snaps.len()];
-    let m = apply_snaps(model, &snaps, &all);
-    if verify(&m, ev) {
-        return Some(m);
-    }
-    let mut mask = vec![false; snaps.len()];
-    for k in 0..snaps.len() {
-        mask[k] = true;
-        let m = apply_snaps(model, &snaps, &mask);
-        if !verify(&m, ev) {
-            mask[k] = false;
-        }
-    }
-    if mask.iter().any(|&x| x) {
-        Some(apply_snaps(model, &snaps, &mask))
-    } else {
-        None
     }
 }
 
@@ -490,7 +431,7 @@ pub(crate) fn solve_ls(basis: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
         }
         rows += 1;
     }
-    if rows < (m as u32 + 8) {
+    if (rows as usize) < fit_min_rows(m) {
         return None;
     }
     for col in 0..m {

@@ -15,6 +15,7 @@ pub(crate) enum Expr {
     Exp(Box<Expr>),
     Log(Box<Expr>),
     Arcsin(Box<Expr>),
+    Arctan(Box<Expr>),
     Arccos(Box<Expr>),
     Tanh(Box<Expr>),
 }
@@ -37,6 +38,7 @@ impl Expr {
             | Expr::Exp(a)
             | Expr::Log(a)
             | Expr::Arcsin(a)
+            | Expr::Arctan(a)
             | Expr::Arccos(a)
             | Expr::Tanh(a) => a.arity(),
         }
@@ -58,6 +60,7 @@ impl Expr {
             | Expr::Exp(a)
             | Expr::Log(a)
             | Expr::Arcsin(a)
+            | Expr::Arctan(a)
             | Expr::Arccos(a)
             | Expr::Tanh(a) => 1 + a.node_count(),
         }
@@ -81,6 +84,7 @@ pub(crate) enum Op {
     Exp,
     Log,
     Arcsin,
+    Arctan,
     Arccos,
     Tanh,
 }
@@ -153,6 +157,10 @@ pub(crate) fn compile(expr: &Expr) -> CompiledExpr {
             Expr::Arcsin(a) => {
                 emit(a, ops);
                 ops.push(Op::Arcsin);
+            }
+            Expr::Arctan(a) => {
+                emit(a, ops);
+                ops.push(Op::Arctan);
             }
             Expr::Arccos(a) => {
                 emit(a, ops);
@@ -315,6 +323,12 @@ impl Evaluator {
                         a[i] = a[i].asin();
                     }
                 }
+                Op::Arctan => {
+                    let a = &mut self.buffers[sp - 1][..n];
+                    for i in 0..n {
+                        a[i] = a[i].atan();
+                    }
+                }
                 Op::Arccos => {
                     let a = &mut self.buffers[sp - 1][..n];
                     for i in 0..n {
@@ -460,6 +474,20 @@ impl Parser {
                 while matches!(self.peek(), Some(c) if c.is_ascii_digit() || c == '.') {
                     s.push(self.advance().unwrap());
                 }
+                if matches!(self.peek(), Some('e') | Some('E')) {
+                    let mut j = self.pos + 1;
+                    if matches!(self.chars.get(j), Some('+') | Some('-')) {
+                        j += 1;
+                    }
+                    if matches!(self.chars.get(j), Some(c) if c.is_ascii_digit()) {
+                        while self.pos < j {
+                            s.push(self.advance().unwrap());
+                        }
+                        while matches!(self.peek(), Some(c) if c.is_ascii_digit()) {
+                            s.push(self.advance().unwrap());
+                        }
+                    }
+                }
                 Ok(Expr::Const(
                     s.parse::<f64>().map_err(|e| format!("bad num: {}", e))?,
                 ))
@@ -502,6 +530,7 @@ impl Parser {
                     "exp" => Ok(Expr::Exp(Box::new(arg))),
                     "log" => Ok(Expr::Log(Box::new(arg))),
                     "arcsin" => Ok(Expr::Arcsin(Box::new(arg))),
+                    "arctan" => Ok(Expr::Arctan(Box::new(arg))),
                     "arccos" => Ok(Expr::Arccos(Box::new(arg))),
                     "tanh" => Ok(Expr::Tanh(Box::new(arg))),
                     "abs" => Ok(Expr::Sqrt(Box::new(Expr::Pow(
@@ -514,135 +543,4 @@ impl Parser {
             other => Err(format!("unexpected: {:?}", other)),
         }
     }
-}
-
-pub(crate) fn simplify_expr(e: Expr) -> Expr {
-    use Expr::*;
-    fn z(e: &Expr) -> bool {
-        matches!(e, Const(c) if * c == 0.0)
-    }
-    fn one(e: &Expr) -> bool {
-        matches!(e, Const(c) if * c == 1.0)
-    }
-    match e {
-        Add(a, b) => {
-            let (a, b) = (simplify_expr(*a), simplify_expr(*b));
-            if z(&a) {
-                b
-            } else if z(&b) {
-                a
-            } else {
-                Add(Box::new(a), Box::new(b))
-            }
-        }
-        Sub(a, b) => {
-            let (a, b) = (simplify_expr(*a), simplify_expr(*b));
-            if z(&b) {
-                a
-            } else if z(&a) {
-                simplify_expr(Neg(Box::new(b)))
-            } else {
-                Sub(Box::new(a), Box::new(b))
-            }
-        }
-        Mul(a, b) => {
-            let (a, b) = (simplify_expr(*a), simplify_expr(*b));
-            if z(&a) || z(&b) {
-                Const(0.0)
-            } else if one(&a) {
-                b
-            } else if one(&b) {
-                a
-            } else {
-                Mul(Box::new(a), Box::new(b))
-            }
-        }
-        Div(a, b) => {
-            let (a, b) = (simplify_expr(*a), simplify_expr(*b));
-            if z(&a) {
-                Const(0.0)
-            } else if one(&b) {
-                a
-            } else {
-                Div(Box::new(a), Box::new(b))
-            }
-        }
-        Pow(a, b) => {
-            let (a, b) = (simplify_expr(*a), simplify_expr(*b));
-            if z(&b) || one(&a) {
-                Const(1.0)
-            } else if one(&b) {
-                a
-            } else {
-                Pow(Box::new(a), Box::new(b))
-            }
-        }
-        Neg(a) => {
-            let a = simplify_expr(*a);
-            match a {
-                Const(c) => Const(-c),
-                a => Neg(Box::new(a)),
-            }
-        }
-        Sqrt(a) => Sqrt(Box::new(simplify_expr(*a))),
-        Sin(a) => Sin(Box::new(simplify_expr(*a))),
-        Cos(a) => Cos(Box::new(simplify_expr(*a))),
-        Tan(a) => Tan(Box::new(simplify_expr(*a))),
-        Exp(a) => Exp(Box::new(simplify_expr(*a))),
-        Log(a) => Log(Box::new(simplify_expr(*a))),
-        Arcsin(a) => Arcsin(Box::new(simplify_expr(*a))),
-        Arccos(a) => Arccos(Box::new(simplify_expr(*a))),
-        Tanh(a) => Tanh(Box::new(simplify_expr(*a))),
-        leaf => leaf,
-    }
-}
-
-pub(crate) fn to_model_string(e: &Expr) -> String {
-    use crate::model::{fmt_const, fmt_exp};
-    use Expr::*;
-    match e {
-        Var(i) => format!("x{}", i + 1),
-        Const(c) => {
-            if *c == 0.0 {
-                fmt_const(0.0)
-            } else if *c < 0.0 {
-                format!("(-{})", fmt_const(-c))
-            } else {
-                fmt_const(*c)
-            }
-        }
-        Add(a, b) => format!("({}+{})", to_model_string(a), to_model_string(b)),
-        Sub(a, b) => format!("({}-{})", to_model_string(a), to_model_string(b)),
-        Mul(a, b) => format!("({}*{})", to_model_string(a), to_model_string(b)),
-        Div(a, b) => format!("({}/{})", to_model_string(a), to_model_string(b)),
-        Neg(a) => format!("(-{})", to_model_string(a)),
-        Pow(a, b) => {
-            let exp = match &**b {
-                Const(c) => fmt_exp(*c),
-                other => to_model_string(other),
-            };
-            format!("(({})**({}))", to_model_string(a), exp)
-        }
-        Sqrt(a) => format!("sqrt({})", to_model_string(a)),
-        Sin(a) => format!("sin({})", to_model_string(a)),
-        Cos(a) => format!("cos({})", to_model_string(a)),
-        Tan(a) => format!("tan({})", to_model_string(a)),
-        Exp(a) => format!("exp({})", to_model_string(a)),
-        Log(a) => format!("log({})", to_model_string(a)),
-        Arcsin(a) => format!("arcsin({})", to_model_string(a)),
-        Arccos(a) => format!("arccos({})", to_model_string(a)),
-        Tanh(a) => format!("tanh({})", to_model_string(a)),
-    }
-}
-
-pub(crate) fn simplify_model(model: &str) -> Option<String> {
-    let e = Parser::parse(model).ok()?;
-    let before = e.node_count();
-    let s = simplify_expr(e);
-    if s.node_count() >= before {
-        return None;
-    }
-    let out = to_model_string(&s);
-    Parser::parse(&out).ok()?;
-    Some(out)
 }

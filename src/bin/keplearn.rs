@@ -5,79 +5,98 @@ use std::io::IsTerminal;
 const HELP: &str = "\
 keplearn - symbolic regression engine
 
-Reads a TSV or CSV with a header row on STDIN (the delimiter comes from
-the header: tab if present, else comma) and searches for a closed-form
-expression of the target column in terms of the remaining columns.
+Reads a TSV or CSV with a header row on STDIN (tab-delimited if the
+header has a tab, else comma) and searches for a closed-form expression
+of the target column in terms of the other numeric columns.
 
 USAGE:
   keplearn [OPTIONS] < data.tsv
 
 OPTIONS:
   --target NAME           target column name (default: \"target\")
-  --top-k N               number of candidate models to emit (default: 10)
-  --sample N              max training rows used by the search (default: 500)
+  --top-k N               number of answers to emit (default: 10)
+  --timeout MS            budget in milliseconds (default: 60000; 0 is
+                          unbounded). The search stops at 80% of it and
+                          the answers are assembled in the rest; a budget
+                          shorter than the first search step (up to about
+                          a second on wide tables) ends after that step
+  --format json|summary   json (default) or a short report in the
+                          table's column names
+  --pretty                indent the JSON
+  -o, --out FILE          write the result to FILE instead of stdout
+  --verbose               print the search's progress lines on stderr
+  --timing                add time_ms to the JSON (without it the same
+                          input gives the same bytes)
+  --sample N              max training rows the search uses (default 500)
   --quick-n N             rows for the quick pre-probe (default: 50)
-  --timeout MS            wall-clock budget in milliseconds; best-so-far is
-                          emitted on expiry (default: 0 = unbounded)
-  -o, --out FILE          write the result JSON to FILE instead of stdout
-  --pretty                indent the result JSON for reading
-  --max-depth D           clamp search depth downward (default: compiled max)
+  --max-depth D           lower the search depth limit
   --trace FILE            append a JSONL event trace to FILE
-  --dump-candidates FILE  write the full scored candidate list to FILE
-  --seed N, --max-evals N accepted for compatibility; unused
+  --dump-candidates FILE  write every scored candidate to FILE
+  --seed N, --max-evals N accepted for compatibility; no effect
   -h, --help              print this help and exit
   -V, --version           print the version and exit
 
-OUTPUT (stdout, one JSON object):
-  {
-    \"results\": [
-      {
-        \"expr\":       \"(2.000000000000*x1+3.000000000000)\",
-        \"model\":      \"(2.000000000000*x1+3.000000000000)\",
-        \"r2\":         1.0,
-        \"search_r2\":  1.0,
-        \"holdout_r2\": 1.0,
-        \"scale\":      1,
-        \"offset\":     0,
-        \"columns\":    [0],
-        \"factor\":     \"direct\"
-      }
-      ... up to --top-k entries, best-first ...
-    ],
-    \"time_ms\":    17,
-    \"stopped_by\": \"exact_exit\"
-  }
+OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
+  schema        \"keplearn.result.v2\"
+  results       up to --top-k answers; each has every field below
+  verdict       the first answer's verdict (see VERDICTS)
+  reason        why the verdict is not exact, or null
+  stopped_by    exact_exit | frontier_exhausted | timeout
+  validation    holdout (80 rows or more: a quarter of the rows, at
+                most 2000, held out) or leave-one-out (fewer rows)
+  noise_floor   the error the cells' written precision implies, as a
+                fraction of the target's variance (0: full precision)
+  names         {target, columns}: column names; x1..xN in a model are
+                columns[0..N-1]
+  rows          data rows read
+  warnings      notes on the input (dropped columns, skipped rows)
+  time_ms       elapsed milliseconds, only with --timing
 
-FIELDS:
-  model        closed form in x1..xN (i-th feature column, target
-               excluded) with fitted constants baked in
-  r2           R² of the model string evaluated on the supplied data
-  search_r2    internal fit-stage score, kept for diagnostics; on noisy
-               data it can sit far above r2
-  holdout_r2   score on the internal 25% holdout, invariant to scale
-               and offset
-  expr, scale, offset, columns
-               raw leaf form for symbolic tooling; expr references a
-               column subset through `columns`
-  stopped_by   exact_exit | frontier_exhausted | timeout
+  Each answer:
+  model         the closed form in x1..xN, constants to 13 digits
+  symbolic      model with snapped constants by name (2*pi, sqrt(2))
+  named         symbolic in the column names
+  verdict       this answer's verdict
+  r2            R^2 of model evaluated on every row (null when the
+                target is constant)
+  holdout_r2    R^2 on the held-out rows, or the leave-one-out R^2
+  search_r2     the search's internal score (diagnostic only)
+  free_constants  constants read off the data (an exact answer does not
+                count integers, small fractions and multiples of pi, e,
+                sqrt(2), sqrt(3))
+  uses          the columns the model reads
+  structure     the model with its constants as c1, c2, ..., b
+  canonical     the model in canonical form (equal to model)
+  expr, scale, offset, columns, factor
+                the raw form: model = scale*expr + offset, with xj in
+                expr meaning column columns[j-1] (0-based)
 
-Diagnostics print to stderr; parse stdout starting at the first '{'.
+  Below 80 rows, answers are ordered exact first (fewest free
+  constants, then shortest), then by description length; from 80 rows,
+  by description length on the held-out rows. Ranking uses the
+  validation score, so a lower answer can have the higher r2.
 
-USAGE NOTES:
-  * Name the prediction column \"target\" or pass --target. Every other
-    column is treated as a feature.
-  * results[0].model is the best model and r2 is its score. Base any
-    downstream decision on r2 or holdout_r2 rather than search_r2.
-  * For batch runs set --timeout 60000. Fits that land an analytic law
-    usually finish in milliseconds; the cap bounds the rest.
-  * With many columns, run subsets of 2-5 at a time. Within a run,
-    irrelevant columns fit to exponent 0 and drop out, but conditioning
-    worsens as they accumulate. Column order has no effect.
-  * The engine is built for analytic laws (ratios, powers, trig,
-    exp/log). On noisy tabular data the best model may carry a low r2;
-    that score still comes from evaluating the printed string.
+VERDICTS:
+  exact         fits to the precision the cells are written to (to
+                1e-9 of the variance on full-precision data; row by row
+                when the target spans decades), is well conditioned,
+                and has rows to spare for its constants
+  approximate   fits far better than a constant, but not to the data's
+                precision (noisy data, or the form is close but wrong)
+  no law found  nothing beats a constant by enough, or the table has
+                too few rows to check the best fit; it is still listed
+
+EXIT STATUS:
+  0  a result was written (whatever its verdict)
+  1  the input could not be used (no data, no target column, not a
+     table, over 1 GiB) or the output could not be written
+  2  invalid command line
+
+NOTES:
+  * Diagnostics and warnings go to stderr; stdout holds only the result.
+  * With many columns, run subsets of 2-5 at a time: irrelevant columns
+    drop out of the answer, but the search slows as they accumulate.
   * Output is deterministic; --seed has no effect.
-  * Input larger than 1 GiB is rejected.
 
 AUTHOR:
   https://github.com/owls-on-wires
@@ -120,14 +139,17 @@ fn main() {
     let mut sample: usize = 500;
     let mut target_col = "target".to_string();
     let mut quick_n: usize = 50;
-    let mut timeout_ms: u64 = 0;
+    let mut timeout_ms: u64 = 60_000;
     let mut max_evals: u64 = 0;
     let mut seed: u64 = 0x9E3779B97F4A7C15;
     let mut max_depth: Option<usize> = None;
     let mut trace_path = String::new();
+    let mut verbose = false;
+    let mut timing = false;
     let mut dump_candidates_path = String::new();
     let mut out_path = String::new();
     let mut pretty = false;
+    let mut format = "json".to_string();
     let mut i = 1;
     while i < args.len() {
         match args[i].as_str() {
@@ -167,8 +189,24 @@ fn main() {
                 out_path = take_val(&args, i, "--out").to_string();
                 i += 2;
             }
+            "--format" => {
+                format = take_val(&args, i, "--format").to_string();
+                if format != "json" && format != "summary" {
+                    eprintln!("keplearn: --format takes json or summary");
+                    std::process::exit(2);
+                }
+                i += 2;
+            }
             "--pretty" => {
                 pretty = true;
+                i += 1;
+            }
+            "--verbose" => {
+                verbose = true;
+                i += 1;
+            }
+            "--timing" => {
+                timing = true;
                 i += 1;
             }
             "--trace" => {
@@ -219,5 +257,9 @@ fn main() {
         dump_candidates_path,
         out_path,
         pretty,
+        format,
+        input_warnings: Vec::new(),
+        verbose,
+        timing,
     });
 }

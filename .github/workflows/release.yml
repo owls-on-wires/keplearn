@@ -7,17 +7,23 @@ on:
 permissions:
   contents: write
 
+# Each release asset is an archive holding one folder, keplearn-<platform>/,
+# with the binary, README.md, LICENSE and docs/. Archive names carry no
+# version, so .../releases/latest/download/<name> always works.
 jobs:
   build:
     strategy:
       matrix:
         include:
           - os: ubuntu-latest
-            asset: keplearn-linux-x86_64
+            name: keplearn-linux-x86_64
+            archive: keplearn-linux-x86_64.tar.gz
           - os: macos-latest
-            asset: keplearn-macos-universal
+            name: keplearn-macos-universal
+            archive: keplearn-macos-universal.tar.gz
           - os: windows-latest
-            asset: keplearn-windows-x86_64.exe
+            name: keplearn-windows-x86_64
+            archive: keplearn-windows-x86_64.zip
     runs-on: ${{ matrix.os }}
     steps:
       - uses: actions/checkout@v4
@@ -27,28 +33,41 @@ jobs:
           sudo apt-get update -q && sudo apt-get install -yq musl-tools
           rustup target add x86_64-unknown-linux-musl
           cargo build --release --target x86_64-unknown-linux-musl
-          cp target/x86_64-unknown-linux-musl/release/keplearn "${{ matrix.asset }}"
-          strip "${{ matrix.asset }}"
+          mkdir -p "${{ matrix.name }}"
+          cp target/x86_64-unknown-linux-musl/release/keplearn "${{ matrix.name }}/keplearn"
+          strip "${{ matrix.name }}/keplearn"
       - name: Build (macOS, universal)
         if: runner.os == 'macOS'
         run: |
           rustup target add x86_64-apple-darwin aarch64-apple-darwin
           cargo build --release --target x86_64-apple-darwin
           cargo build --release --target aarch64-apple-darwin
-          lipo -create -output "${{ matrix.asset }}" \
+          mkdir -p "${{ matrix.name }}"
+          lipo -create -output "${{ matrix.name }}/keplearn" \
             target/x86_64-apple-darwin/release/keplearn \
             target/aarch64-apple-darwin/release/keplearn
-          strip "${{ matrix.asset }}"
+          strip "${{ matrix.name }}/keplearn"
       - name: Build (Windows, static CRT)
         if: runner.os == 'Windows'
         shell: bash
         run: |
           RUSTFLAGS="-C target-feature=+crt-static" cargo build --release
-          cp target/release/keplearn.exe "${{ matrix.asset }}"
+          mkdir -p "${{ matrix.name }}"
+          cp target/release/keplearn.exe "${{ matrix.name }}/keplearn.exe"
+      - name: Package
+        shell: bash
+        run: |
+          cp README.md LICENSE "${{ matrix.name }}/"
+          cp -r docs "${{ matrix.name }}/docs"
+          if [ "${{ runner.os }}" = "Windows" ]; then
+            7z a -tzip "${{ matrix.archive }}" "${{ matrix.name }}"
+          else
+            tar -czf "${{ matrix.archive }}" "${{ matrix.name }}"
+          fi
       - name: Upload to release
         shell: bash
         env:
           GH_TOKEN: ${{ github.token }}
         run: |
           gh release create "$GITHUB_REF_NAME" --generate-notes 2>/dev/null || true
-          gh release upload "$GITHUB_REF_NAME" "${{ matrix.asset }}" --clobber
+          gh release upload "$GITHUB_REF_NAME" "${{ matrix.archive }}" --clobber

@@ -28,103 +28,6 @@ fn snap_value_targets_and_refusals() {
 }
 
 #[test]
-fn literal_spans_skip_identifiers() {
-    let spans = literal_spans("((x12*3.5)+0.999063000000)");
-    let vals: Vec<f64> = spans.iter().map(|&(_, _, v)| v).collect();
-    assert_eq!(vals, vec![3.5, 0.999063]);
-    let snaps: Vec<(usize, usize, String)> = spans
-        .iter()
-        .filter_map(|&(a, b, v)| snap_value(v).map(|s| (a, b, fmt_const(s))))
-        .collect();
-    let out = apply_snaps(
-        "((x12*3.5)+0.999063000000)",
-        &snaps,
-        &vec![true; snaps.len()],
-    );
-    assert_eq!(out, "((x12*3.5)+1.000000000000)");
-}
-
-#[test]
-fn snap_model_constants_holdout_verified() {
-    let n = 60usize;
-    let pr = |i: usize, k: f64| -> f64 {
-        let h = (i as f64 + 1.0) * k;
-        let s = h.sin() * 43758.5453;
-        s - s.floor()
-    };
-    let x1: Vec<f64> = (0..n).map(|i| 0.3 + 2.5 * pr(i, 12.9898)).collect();
-    let x2: Vec<f64> = (0..n).map(|i| 1.1 + 1.8 * pr(i, 78.233)).collect();
-    let features = vec![x1.clone(), x2.clone()];
-    let (h_lo, h_hi) = (30usize, n);
-    let ho_keep = vec![true; h_hi - h_lo];
-    let ho_min_rows = (h_hi - h_lo) * 9 / 10;
-    let mut ev = Evaluator::new(4, n);
-    let target: Vec<f64> = (0..n).map(|i| x2[i] * (x1[i] + 1.0)).collect();
-    let model = "(x2*(x1+0.999063000000))";
-    let (base_rh, _) = holdout_model_r2(
-        model,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    )
-    .unwrap();
-    let snapped = snap_model_constants(
-        model,
-        base_rh,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    )
-    .expect("near-integer inner constant must snap");
-    assert_eq!(snapped, "(x2*(x1+1.000000000000))");
-    assert!(snap_model_constants(
-        "(x2*(x1+1.000000000000))",
-        1.0,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev
-    )
-    .is_none());
-    let target2: Vec<f64> = (0..n).map(|i| x2[i] * (x1[i] + 0.51)).collect();
-    let model2 = "(x2*(x1+0.510000000000))";
-    let (rh2, _) = holdout_model_r2(
-        model2,
-        &features,
-        &target2,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    )
-    .unwrap();
-    assert!(snap_model_constants(
-        model2,
-        rh2,
-        &features,
-        &target2,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev
-    )
-    .is_none());
-}
-
-#[test]
 #[allow(clippy::type_complexity)]
 fn parser_round_trip() {
     let xs1 = [0.5, 1.0, 1.7, 2.3, 0.9];
@@ -396,159 +299,6 @@ fn full_model_r2_scores_emitted_string() {
 }
 
 #[test]
-fn snap_zero_guard_keeps_load_bearing_small_coefficients() {
-    let n = 60usize;
-    let pr = |i: usize, k: f64| -> f64 {
-        let h = (i as f64 + 1.0) * k;
-        let s = h.sin() * 43758.5453;
-        s - s.floor()
-    };
-    let x1: Vec<f64> = (0..n)
-        .map(|i| {
-            if i < 30 {
-                10.0 + i as f64
-            } else {
-                0.1 + 0.01 * (i as f64 - 30.0)
-            }
-        })
-        .collect();
-    let x2: Vec<f64> = (0..n).map(|i| 1.0 + 2.0 * pr(i, 78.233)).collect();
-    let features = vec![x1.clone(), x2.clone()];
-    let target: Vec<f64> = (0..n)
-        .map(|i| 0.001 * x1[i].powi(3) + 5.0 * x2[i] + 100.0)
-        .collect();
-    let model = "((0.001000000000*((x1)**3))+((5.000000000000*x2)+100.000000000000))";
-    let (h_lo, h_hi) = (30usize, n);
-    let ho_keep = vec![true; h_hi - h_lo];
-    let ho_min_rows = (h_hi - h_lo) * 9 / 10;
-    let mut ev = Evaluator::new(6, n);
-    let (base_rh, _) = holdout_model_r2(
-        model,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    )
-    .unwrap();
-    let gutted = "((0.000000000000*((x1)**3))+((5.000000000000*x2)+100.000000000000))";
-    let (gutted_rh, _) = holdout_model_r2(
-        gutted,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    )
-    .unwrap();
-    let slack = (1.0 - base_rh).max(0.0) * SNAP_HOLDOUT_SLACK + 1e-9;
-    assert!(
-        gutted_rh >= base_rh - slack,
-        "test premise broken: holdout must be blind to the term ({} vs {})",
-        gutted_rh,
-        base_rh
-    );
-    let snapped = snap_model_constants(
-        model,
-        base_rh,
-        &features,
-        &target,
-        h_lo,
-        h_hi,
-        &ho_keep,
-        ho_min_rows,
-        &mut ev,
-    );
-    match snapped {
-        None => {}
-        Some(m) => {
-            assert!(
-                m.contains("0.001000000000"),
-                "load-bearing coefficient was zero-snapped: {}",
-                m
-            )
-        }
-    }
-}
-
-#[test]
-fn simplify_model_drops_zeroed_terms() {
-    let m = "(x4*(0.000000000000*(((x2)**0.000000000000*(x5)**0.000000000000/(x1*x4)))+0.000000000000*(((x2)**6*x5/((x1)**5*x3*x4)))+86.500000000000))";
-    let s = simplify_model(m).expect("must simplify");
-    assert!(
-        !s.contains("0.000000000000*") && !s.contains("**(0)"),
-        "zeroed terms survived: {}",
-        s
-    );
-    let vars: Vec<Vec<f64>> = (0..5)
-        .map(|j| {
-            (0..8)
-                .map(|i| 0.7 + 0.31 * (i as f64) + 0.17 * (j as f64))
-                .collect()
-        })
-        .collect();
-    let slices: Vec<&[f64]> = vars.iter().map(|v| v.as_slice()).collect();
-    let a = eval_str(m, &slices, 8);
-    let b = eval_str(&s, &slices, 8);
-    for i in 0..8 {
-        assert!(
-            (a[i] - b[i]).abs() <= 1e-9 * (1.0 + a[i].abs()),
-            "row {}: {} vs {} ({})",
-            i,
-            a[i],
-            b[i],
-            s
-        );
-    }
-    let s2 = simplify_model("(((x1**(1))*(1.000000000000*(x2**(1)))))").expect("identities");
-    let b2 = eval_str(&s2, &slices, 8);
-    let a2 = eval_str("(x1*x2)", &slices, 8);
-    for i in 0..8 {
-        assert!((a2[i] - b2[i]).abs() < 1e-12, "{}", s2);
-    }
-    assert!(simplify_model("((2.500000000000*sin(x1))+0.300000000000)").is_none());
-    assert!(simplify_model("(exp(x3)*(x2/(x1*x4)))").is_none());
-}
-
-#[test]
-fn affine_fit_calibrates_emitted_string() {
-    let n = 50usize;
-    let x1: Vec<f64> = (0..n).map(|i| 0.5 + 0.1 * i as f64).collect();
-    let features = vec![x1.clone()];
-    let target: Vec<f64> = x1.iter().map(|v| 3.0 * v * v + 5.0).collect();
-    let mut ev = Evaluator::new(4, n);
-    let (a, b) =
-        full_model_affine_fit("((x1)**(2))", &features, &target, &mut ev).expect("calibratable");
-    assert!(
-        (a - 3.0).abs() < 1e-9 && (b - 5.0).abs() < 1e-9,
-        "a={} b={}",
-        a,
-        b
-    );
-    let raw = full_model_r2("((x1)**(2))", &features, &target, &mut ev);
-    let baked = full_model_r2(
-        "(3.000000000000*(((x1)**(2)))+5.000000000000)",
-        &features,
-        &target,
-        &mut ev,
-    );
-    assert!(raw < 0.999, "raw={}", raw);
-    assert!((baked - 1.0).abs() < 1e-9, "baked={}", baked);
-    let (a, b) = full_model_affine_fit(
-        "(3.000000000000*(((x1)**(2)))+5.000000000000)",
-        &features,
-        &target,
-        &mut ev,
-    )
-    .expect("fit");
-    assert!(affine_trivial(a, b), "a={} b={}", a, b);
-}
-
-#[test]
 fn split_row_handles_quotes_and_delims() {
     assert_eq!(split_row("a\tb\tc", '\t'), vec!["a", "b", "c"]);
     assert_eq!(split_row("1.5,2,3", ','), vec!["1.5", "2", "3"]);
@@ -594,4 +344,577 @@ fn json_pretty_formats_without_touching_tokens() {
     assert!(pretty.contains("\n  \"results\": ["));
     assert!(pretty.contains(r#""a\"b, {c}""#));
     assert!(pretty.contains("\"empty\": []"));
+}
+
+fn test_cfg() -> Config {
+    Config {
+        top_k: 5,
+        sample: 500,
+        target_col: "y".to_string(),
+        quick_n: 50,
+        timeout_ms: 60_000,
+        max_evals: 0,
+        seed: 0,
+        max_depth: None,
+        trace_path: String::new(),
+        dump_candidates_path: String::new(),
+        out_path: String::new(),
+        pretty: false,
+        format: "json".to_string(),
+        input_warnings: Vec::new(),
+        verbose: false,
+        timing: false,
+    }
+}
+
+fn lcg(s: &mut u64) -> f64 {
+    *s = s
+        .wrapping_mul(6364136223846793005)
+        .wrapping_add(1442695040888963407);
+    (*s >> 11) as f64 / (1u64 << 53) as f64
+}
+
+fn csv_table(
+    n: usize,
+    ranges: &[(f64, f64)],
+    mut f: impl FnMut(&[f64]) -> f64,
+    seed: u64,
+) -> String {
+    let mut s = seed;
+    let mut out: String = (1..=ranges.len())
+        .map(|i| format!("x{},", i))
+        .collect::<String>()
+        + "y\n";
+    for _ in 0..n {
+        let x: Vec<f64> = ranges
+            .iter()
+            .map(|&(lo, hi)| lo + (hi - lo) * lcg(&mut s))
+            .collect();
+        for v in &x {
+            out.push_str(&format!("{:.12e},", v));
+        }
+        out.push_str(&format!("{:.12e}\n", f(&x)));
+    }
+    out
+}
+
+fn run_json(table: &str) -> crate::forms::json::Json {
+    let out = run_text(table, test_cfg()).expect("run_text");
+    crate::forms::json::parse(&out).expect("json")
+}
+
+fn top_structure(table: &str) -> String {
+    let j = run_json(table);
+    let r = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned();
+    r.and_then(|r| {
+        r.get("structure")
+            .and_then(|s| s.as_str())
+            .map(|s| s.to_string())
+    })
+    .unwrap_or_default()
+}
+
+#[test]
+fn ingest_drops_columns_without_numbers() {
+    let t = "body,a,p\nMercury,0.387,0.241\nVenus,0.723,0.615\nEarth,1.0,1.0\n";
+    let ing = ingest(t, "p").expect("ingest");
+    assert_eq!(ing.n_cols, 1);
+    assert_eq!(ing.target.len(), 3);
+    assert!(
+        ing.warnings.iter().any(|w| w.contains("'body'")),
+        "{:?}",
+        ing.warnings
+    );
+}
+
+#[test]
+fn end_to_end_power_law_40_rows() {
+    let t = csv_table(40, &[(0.5, 5.0)], |x| x[0].powf(1.5), 12345);
+    assert_eq!(top_structure(&t), "c1*x1**(3/2) + b");
+}
+
+fn top_and_verdict(table: &str) -> (String, String, String) {
+    let j = run_json(table);
+    let r = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned();
+    let get = |k: &str| {
+        r.as_ref()
+            .and_then(|r| r.get(k).and_then(|s| s.as_str()).map(|s| s.to_string()))
+            .unwrap_or_default()
+    };
+    (
+        get("model"),
+        get("structure"),
+        j.get("verdict")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+fn same_function(model: &str, ranges: &[(f64, f64)], f: impl Fn(&[f64]) -> f64) -> bool {
+    let mut s = 99u64;
+    let n = 50;
+    let cols: Vec<Vec<f64>> = ranges
+        .iter()
+        .map(|&(lo, hi)| (0..n).map(|_| lo + (hi - lo) * lcg(&mut s)).collect())
+        .collect();
+    let vars: Vec<&[f64]> = cols.iter().map(|c| c.as_slice()).collect();
+    let got = eval_str(model, &vars, n);
+    (0..n).all(|r| {
+        let x: Vec<f64> = cols.iter().map(|c| c[r]).collect();
+        let want = f(&x);
+        (got[r] - want).abs() <= 1e-6 * want.abs().max(1e-12)
+    })
+}
+
+#[test]
+fn small_power_law_6_8_12_rows() {
+    for n in [6, 8, 12] {
+        let t = csv_table(n, &[(0.5, 5.0)], |x| x[0].powf(1.5), 4242 + n as u64);
+        let (_, st, v) = top_and_verdict(&t);
+        assert_eq!(
+            (st.as_str(), v.as_str()),
+            ("c1*x1**(3/2) + b", "exact"),
+            "{} rows",
+            n
+        );
+    }
+}
+
+#[test]
+fn small_two_column_monomial_6_8_12_rows() {
+    for n in [6, 8, 12] {
+        let t = csv_table(
+            n,
+            &[(0.5, 5.0), (0.5, 5.0)],
+            |x| x[0] / (x[1] * x[1]),
+            5151 + n as u64,
+        );
+        let (_, st, v) = top_and_verdict(&t);
+        assert_eq!(
+            (st.as_str(), v.as_str()),
+            ("c1*x1/x2**2 + b", "exact"),
+            "{} rows",
+            n
+        );
+    }
+}
+
+#[test]
+fn small_shell_form_8_12_rows() {
+    let f = |x: &[f64]| (x[0] * x[1] + 1.0).sqrt();
+    for n in [8, 12] {
+        let t = csv_table(n, &[(0.5, 5.0), (0.5, 5.0)], f, 6161 + n as u64);
+        let (m, _, v) = top_and_verdict(&t);
+        assert!(
+            v == "exact" && same_function(&m, &[(0.5, 5.0), (0.5, 5.0)], f),
+            "{} rows: {} ({})",
+            n,
+            m,
+            v
+        );
+    }
+}
+
+#[test]
+fn unrelated_target_8_rows_abstains() {
+    let mut s = 31337u64;
+    let t = csv_table(8, &[(0.5, 5.0)], |_| 1.0 + 4.0 * lcg(&mut s), 7171);
+    let (_, _, v) = top_and_verdict(&t);
+    assert_eq!(v, "no law found");
+}
+
+fn gauss(s: &mut u64) -> f64 {
+    let u1 = lcg(s).max(1e-300);
+    let u2 = lcg(s);
+    (-2.0 * u1.ln()).sqrt() * (2.0 * std::f64::consts::PI * u2).cos()
+}
+
+fn csv_rounded(
+    n: usize,
+    ranges: &[(f64, f64)],
+    f: impl Fn(&[f64]) -> f64,
+    seed: u64,
+    dec: usize,
+) -> String {
+    let mut s = seed;
+    let mut out: String = (1..=ranges.len())
+        .map(|i| format!("x{},", i))
+        .collect::<String>()
+        + "y\n";
+    for _ in 0..n {
+        let x: Vec<f64> = ranges
+            .iter()
+            .map(|&(lo, hi)| lo + (hi - lo) * lcg(&mut s))
+            .collect();
+        let xr: Vec<f64> = x
+            .iter()
+            .map(|v| format!("{:.*}", dec, v).parse().unwrap())
+            .collect();
+        for v in &xr {
+            out.push_str(&format!("{:.*},", dec, v));
+        }
+        out.push_str(&format!("{:.*}\n", dec, f(&xr)));
+    }
+    out
+}
+
+fn num(j: &crate::forms::json::Json, k: &str) -> f64 {
+    j.get(k).and_then(|v| v.as_f64()).unwrap_or(f64::NAN)
+}
+
+#[test]
+fn rounded_power_law_40_rows_exact_with_floor() {
+    let t = csv_rounded(40, &[(0.5, 5.0)], |x| x[0].powf(1.5), 8181, 3);
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        top.get("structure").and_then(|s| s.as_str()),
+        Some("c1*x1**(3/2) + b")
+    );
+    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    let rows: Vec<(f64, f64)> = t
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let v: Vec<f64> = l.split(',').map(|c| c.parse().unwrap()).collect();
+            (v[0], v[1])
+        })
+        .collect();
+    let q2 = 1e-6 / 12.0;
+    let known = rows
+        .iter()
+        .map(|(x, _)| q2 + (1.5 * x.sqrt()).powi(2) * q2)
+        .sum::<f64>()
+        / rows.len() as f64;
+    let ym = rows.iter().map(|r| r.1).sum::<f64>() / rows.len() as f64;
+    let vy = rows.iter().map(|r| (r.1 - ym).powi(2)).sum::<f64>() / rows.len() as f64;
+    let ratio = num(&j, "noise_floor") / (known / vy);
+    assert!((0.5..=2.0).contains(&ratio), "floor ratio {}", ratio);
+}
+
+#[test]
+fn noisy_power_law_40_rows_not_exact() {
+    let mut s = 9191u64;
+    let t = csv_table(
+        40,
+        &[(0.5, 5.0)],
+        |x| x[0].powf(1.5) * (1.0 + 0.001 * gauss(&mut s)),
+        9292,
+    );
+    let (_, st, v) = top_and_verdict(&t);
+    assert_eq!(st, "c1*x1**(3/2) + b");
+    assert_eq!(v, "approximate");
+}
+
+#[test]
+fn rounded_and_noisy_monomial_and_shell_40_rows() {
+    let r2 = [(0.5, 5.0), (0.5, 5.0)];
+    let mono = |x: &[f64]| x[0] / (x[1] * x[1]);
+    let shell = |x: &[f64]| (x[0] * x[1] + 1.0).sqrt();
+    let forms: [(&dyn Fn(&[f64]) -> f64, u64); 2] = [(&mono, 1212), (&shell, 1313)];
+    for (f, seed) in forms {
+        let (m, _, v) = top_and_verdict(&csv_rounded(40, &r2, f, seed, 3));
+        assert!(
+            v == "exact" && same_function(&m, &r2, f),
+            "rounded: {} ({})",
+            m,
+            v
+        );
+        let mut s = seed + 7;
+        let (m, _, v) = top_and_verdict(&csv_table(
+            40,
+            &r2,
+            |x| f(x) * (1.0 + 0.001 * gauss(&mut s)),
+            seed + 1,
+        ));
+        assert!(v == "approximate", "noisy: {} ({})", m, v);
+    }
+}
+
+#[test]
+fn noisy_pendulum_200_rows_snaps_two_pi() {
+    let mut s = 4343u64;
+    let gs = [9.81, 3.71, 1.62, 24.79];
+    let mut out = String::from("length,g,period\n");
+    let mut r = 5454u64;
+    for i in 0..200 {
+        let l = 0.2 + 1.8 * lcg(&mut r);
+        let g = gs[i % 4];
+        let p = 2.0 * std::f64::consts::PI * (l / g).sqrt() * (1.0 + 0.01 * gauss(&mut s));
+        out.push_str(&format!("{:.4},{},{:.5}\n", l, g, p));
+    }
+    let mut cfg = test_cfg();
+    cfg.target_col = "period".to_string();
+    let j = crate::forms::json::parse(&run_text(&out, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    let named = top
+        .get("named")
+        .and_then(|s| s.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert!(
+        named.contains("2*pi") && named.contains("length") && named.contains("g"),
+        "{}",
+        named
+    );
+    assert_ne!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+}
+
+#[test]
+fn ranking_puts_the_best_scoring_law_first() {
+    let t = csv_rounded(
+        40,
+        &[(0.5, 5.0), (0.5, 5.0)],
+        |x| x[0] / (x[1] * x[1]),
+        1212,
+        3,
+    );
+    let j = run_json(&t);
+    let rs: Vec<f64> = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .unwrap()
+        .iter()
+        .map(|r| num(r, "r2"))
+        .collect();
+    assert!(rs.iter().skip(1).all(|r| rs[0] >= *r - 1e-9), "{:?}", rs);
+}
+
+#[test]
+fn summary_of_the_rounded_bodies_table() {
+    let input = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/field_bodies26_r3.csv"
+    ))
+    .unwrap();
+    let want = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/field_bodies26_r3.summary.txt"
+    ))
+    .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = "period_years".to_string();
+    let got = crate::summary::render(&run_text(&input, cfg).unwrap());
+    assert_eq!(got, want);
+}
+
+#[test]
+fn constant_target_is_the_law_and_few_rows_are_named() {
+    let t: String =
+        "x,y\n".to_string() + &(0..50).map(|i| format!("{},4.2\n", i)).collect::<String>();
+    let j = run_json(&t);
+    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(top.get("model").and_then(|v| v.as_str()), Some("4.2"));
+    let t = "x,y\n1,2\n2,4\n3,6\n";
+    let j = run_json(t);
+    assert_eq!(
+        j.get("verdict").and_then(|v| v.as_str()),
+        Some("no law found")
+    );
+    assert!(j
+        .get("reason")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .contains("3 data rows"));
+}
+
+#[test]
+fn input_that_is_not_a_table_is_named() {
+    for (t, want) in [
+        ("{\"a\": 1}\n", "JSON"),
+        ("a\x00\x01\x02\x03\x04,b\n\x05\x06,\x07\n", "not text"),
+        ("y\n1\n2\n", "single column"),
+        ("1,2\n3,4\n", "holds numbers"),
+    ] {
+        let e = run_text(t, test_cfg()).unwrap_err();
+        assert!(e.contains(want), "{}: {}", want, e);
+    }
+}
+
+#[test]
+fn planets_to_two_digits_give_the_power_law() {
+    let t = "a,y\n0.39,0.24\n0.72,0.62\n1.0,1.0\n1.5,1.9\n5.2,12.0\n9.5,29.0\n19.0,84.0\n30.0,160.0\n39.0,250.0\n";
+    let (m, _, v) = top_and_verdict(t);
+    assert_eq!((m.as_str(), v.as_str()), ("x1**(3/2)", "exact"));
+}
+
+#[test]
+fn every_result_has_every_field_and_the_bytes_repeat() {
+    let t = csv_table(
+        60,
+        &[(0.5, 5.0), (0.5, 5.0)],
+        |x| x[0] * x[1].sin() + 0.1 * x[0],
+        2468,
+    );
+    let a = run_text(&t, test_cfg()).unwrap();
+    let b = run_text(&t, test_cfg()).unwrap();
+    assert_eq!(a, b);
+    let j = crate::forms::json::parse(&a).unwrap();
+    assert_eq!(
+        j.get("schema").and_then(|v| v.as_str()),
+        Some("keplearn.result.v2")
+    );
+    assert!(j.get("time_ms").is_none());
+    let keys = [
+        "expr",
+        "model",
+        "r2",
+        "search_r2",
+        "holdout_r2",
+        "scale",
+        "offset",
+        "columns",
+        "uses",
+        "factor",
+        "structure",
+        "canonical",
+        "verdict",
+        "symbolic",
+        "named",
+        "free_constants",
+    ];
+    for r in j.get("results").and_then(|r| r.as_arr()).unwrap() {
+        for k in keys {
+            assert!(r.get(k).is_some(), "missing {}", k);
+        }
+    }
+}
+
+#[test]
+fn ill_conditioned_forms_are_never_exact() {
+    let x: Vec<f64> = (0..40).map(|i| 0.2 + 0.05 * i as f64).collect();
+    let f = vec![x.clone()];
+    assert!(!crate::guard::well_conditioned(
+        "8.025e42*1/((1/sqrt(x1) + (-2e21)*1/x1**(1/4))**2)",
+        &f,
+        40
+    ));
+    assert!(!crate::guard::well_conditioned(
+        "65.7*x1*arccos(-0.00008*1/x1**2 + 1)",
+        &f,
+        40
+    ));
+    assert!(crate::guard::well_conditioned("2.006*sqrt(x1)", &f, 40));
+    assert!(
+        crate::guard::structural_constant(1.5)
+            && crate::guard::structural_constant(2.0 * std::f64::consts::PI)
+    );
+    assert!(!crate::guard::structural_constant(115.0) && !crate::guard::structural_constant(0.03));
+}
+
+#[test]
+fn tables_below_80_rows_use_every_row() {
+    for (n, want) in [(60, "leave-one-out"), (100, "holdout")] {
+        let t = csv_table(
+            n,
+            &[(0.5, 5.0), (0.5, 5.0)],
+            |x| x[0] * x[1].sqrt(),
+            1357 + n as u64,
+        );
+        let j = run_json(&t);
+        assert_eq!(
+            j.get("validation").and_then(|v| v.as_str()),
+            Some(want),
+            "{} rows",
+            n
+        );
+        let (m, _, v) = top_and_verdict(&t);
+        assert!(
+            v == "exact" && same_function(&m, &[(0.5, 5.0), (0.5, 5.0)], |x| x[0] * x[1].sqrt()),
+            "{} rows: {} ({})",
+            n,
+            m,
+            v
+        );
+    }
+}
+
+#[test]
+fn reference_documents_every_output_field() {
+    let doc =
+        std::fs::read_to_string(concat!(env!("CARGO_MANIFEST_DIR"), "/docs/reference.md")).unwrap();
+    let mut cfg = test_cfg();
+    cfg.timing = true;
+    let t = csv_table(30, &[(0.5, 5.0)], |x| 2.0 * x[0], 97);
+    let out = run_text(&t, cfg).unwrap();
+    let j = crate::forms::json::parse(&out).unwrap();
+    let schema = j.get("schema").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(
+        !schema.is_empty() && doc.contains(schema),
+        "schema {} not in the reference",
+        schema
+    );
+    let answer = &out[out.find("\"results\":[").unwrap() + 11..];
+    let answer = &answer[..answer.find('}').unwrap() + 1];
+    let fields = json_keys(&out)
+        .into_iter()
+        .chain(json_keys(answer))
+        .collect::<Vec<_>>();
+    assert!(fields.len() > 25, "{:?}", fields);
+    for k in fields {
+        assert!(
+            doc.contains(&format!("`{}`", k)),
+            "field {} is not in docs/reference.md",
+            k
+        );
+    }
+}
+
+fn json_keys(obj: &str) -> Vec<String> {
+    let mut keys = Vec::new();
+    let (mut depth, mut in_str, mut esc, mut cur) = (0i32, false, false, None::<String>);
+    for c in obj.chars() {
+        if in_str {
+            if esc {
+                esc = false;
+            } else if c == '\\' {
+                esc = true;
+            } else if c == '"' {
+                in_str = false;
+            } else if let Some(k) = cur.as_mut() {
+                k.push(c);
+            }
+            continue;
+        }
+        match c {
+            '{' | '[' => depth += 1,
+            '}' | ']' => depth -= 1,
+            '"' => {
+                in_str = true;
+                cur = (depth == 1).then(String::new);
+            }
+            ':' if depth == 1 => keys.extend(cur.take()),
+            _ => {
+                if c != ' ' {
+                    cur = None;
+                }
+            }
+        }
+    }
+    keys
 }

@@ -1,0 +1,39 @@
+{
+ "field_planets8.csv": {
+  "target": "period_years",
+  "truth": "x1**1.5",
+  "columns": [
+   "distance_au"
+  ]
+ },
+ "field_bodies26.csv": {
+  "target": "period_years",
+  "truth": "x1**1.5",
+  "columns": [
+   "distance_au"
+  ]
+ },
+ "field_bodies26_r3.csv": {
+  "target": "period_years",
+  "truth": "x1**1.5",
+  "columns": [
+   "distance_au"
+  ]
+ },
+ "field_pendulum30.csv": {
+  "target": "period_s",
+  "truth": "6.283185307179586*sqrt(x1/x2)",
+  "columns": [
+   "length_m",
+   "g"
+  ]
+ },
+ "field_pendulum200.csv": {
+  "target": "period_s",
+  "truth": "6.283185307179586*sqrt(x1/x2)",
+  "columns": [
+   "length_m",
+   "g"
+  ]
+ }
+}

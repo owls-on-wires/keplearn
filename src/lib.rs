@@ -33,9 +33,6 @@ pub(crate) use model::*;
 mod fit;
 pub(crate) use fit::*;
 
-mod generators;
-pub(crate) use generators::*;
-
 mod harvest;
 pub(crate) use harvest::*;
 
@@ -45,9 +42,17 @@ pub(crate) use search::*;
 mod output;
 pub(crate) use output::*;
 
+mod forms;
+
+mod guard;
+
+pub mod summary;
+
 mod driver;
+#[cfg(test)]
+pub(crate) use driver::ingest;
 pub(crate) use driver::split_row;
-pub use driver::{run, Config};
+pub use driver::{run, run_text, Config};
 
 pub fn fuzz_parse(s: &str) {
     let _ = expr::Parser::parse(s);

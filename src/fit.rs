@@ -12,6 +12,109 @@ pub(crate) fn quick_probe(t: &[f64], inputs: &[&[f64]], qn: usize) -> f64 {
     best
 }
 
+pub(crate) fn joint_probe(t: &[f64], inputs: &[&[f64]], basis: &[Vec<f64>]) -> f64 {
+    let n = basis
+        .iter()
+        .map(|b| b.len())
+        .chain(inputs.iter().map(|a| a.len()))
+        .chain([t.len()])
+        .min()
+        .unwrap_or(0);
+    let terms: Vec<&[f64]> = inputs
+        .iter()
+        .copied()
+        .chain(basis.iter().map(|b| b.as_slice()))
+        .collect();
+    let ok = |r: usize| t[r].is_finite() && terms.iter().all(|c| c[r].is_finite());
+    let fit_rows: Vec<usize> = (0..n).step_by(2).filter(|&r| ok(r)).collect();
+    let ho_rows: Vec<usize> = (1..n).step_by(2).filter(|&r| ok(r)).collect();
+    if fit_rows.len() <= terms.len() + 1 || ho_rows.len() < 3 {
+        return 0.0;
+    }
+    let g: Vec<Vec<f64>> = terms
+        .iter()
+        .map(|c| fit_rows.iter().map(|&r| c[r]).collect())
+        .collect();
+    let y: Vec<f64> = fit_rows.iter().map(|&r| t[r]).collect();
+    let Some((coef, offset)) = crate::forms::fit::linear_fit(&g, &y) else {
+        return 0.0;
+    };
+    let yh: Vec<f64> = ho_rows.iter().map(|&r| t[r]).collect();
+    let pred: Vec<f64> = ho_rows
+        .iter()
+        .map(|&r| offset + coef.iter().zip(&terms).map(|(c, x)| c * x[r]).sum::<f64>())
+        .collect();
+    let r2 = crate::forms::fit::r2(&yh, &pred);
+    if r2.is_finite() {
+        r2
+    } else {
+        0.0
+    }
+}
+
+pub(crate) fn library_atoms(features: &[Vec<f64>], n_cols: usize, rows: &[usize]) -> Vec<Vec<f64>> {
+    let mut lib = None;
+    for max_nodes in 1..=16 {
+        match crate::forms::reduce::library(n_cols, max_nodes, 4000) {
+            Some(l) => lib = Some(l),
+            None => break,
+        }
+    }
+    let Some(lib) = lib else { return Vec::new() };
+    let sub: Vec<Vec<f64>> = features[..n_cols]
+        .iter()
+        .map(|c| rows.iter().map(|&r| c[r]).collect())
+        .collect();
+    let mut out = Vec::new();
+    for e in &lib {
+        let Some(v) = crate::forms::nf::eval_terms(e, &sub, &[])
+            .into_iter()
+            .next()
+        else {
+            continue;
+        };
+        if !v.iter().all(|t| t.is_finite()) {
+            continue;
+        }
+        let m = v.iter().sum::<f64>() / v.len() as f64;
+        let var = v.iter().map(|t| (t - m) * (t - m)).sum::<f64>() / v.len() as f64;
+        if var > 1e-24 * (m * m).max(1e-300) {
+            out.push(v);
+        }
+    }
+    out
+}
+
+pub(crate) fn best_atom_r2(t: &[f64], atoms: &[Vec<f64>]) -> f64 {
+    let ok: Vec<usize> = (0..t.len()).filter(|&r| t[r].is_finite()).collect();
+    if ok.len() < 8 {
+        return 0.0;
+    }
+    let n = ok.len() as f64;
+    let mt = ok.iter().map(|&r| t[r]).sum::<f64>() / n;
+    let vt = ok.iter().map(|&r| (t[r] - mt) * (t[r] - mt)).sum::<f64>();
+    if !(vt > 0.0) {
+        return 0.0;
+    }
+    let mut best = 0.0f64;
+    for a in atoms {
+        let ma = ok.iter().map(|&r| a[r]).sum::<f64>() / n;
+        let (mut sab, mut saa) = (0.0, 0.0);
+        for &r in &ok {
+            let da = a[r] - ma;
+            sab += da * (t[r] - mt);
+            saa += da * da;
+        }
+        if saa > 0.0 {
+            let r2 = sab * sab / (saa * vt);
+            if r2 > best {
+                best = r2;
+            }
+        }
+    }
+    best
+}
+
 pub(crate) fn build_probe_basis(inputs: &[&[f64]], qn: usize) -> Vec<Vec<f64>> {
     let n = inputs.len();
     let mut out: Vec<Vec<f64>> = Vec::with_capacity(2 * n + n * n * 2);
@@ -76,7 +179,7 @@ pub(crate) fn quick_probe_ext(t: &[f64], inputs: &[&[f64]], basis: &[Vec<f64>], 
 
 pub(crate) fn monomial_loglin_r2(resid: &[f64], inputs: &[&[f64]], qn: usize) -> f64 {
     let q = qn.min(resid.len());
-    if q < MONOMIAL_FIT_MIN_ROWS {
+    if q < fit_min_rows(inputs.len() + 1) {
         return 0.0;
     }
     let mut basis: Vec<Vec<f64>> = Vec::with_capacity(inputs.len());
@@ -125,7 +228,7 @@ pub(crate) fn monomial_loglin_r2(resid: &[f64], inputs: &[&[f64]], qn: usize) ->
         syy += y[r] * y[r];
         n += 1;
     }
-    if n < MONOMIAL_FIT_MIN_ROWS as u32 {
+    if (n as usize) < fit_min_rows(k + 1) {
         return 0.0;
     }
     let sst = syy - sy * sy / n as f64;
@@ -172,7 +275,7 @@ fn loglin_r2_at(target: &[f64], off: f64, logcols: &[Vec<f64>], q: usize) -> f64
         syy += ylog[r] * ylog[r];
         n += 1;
     }
-    if n < LOGLIN_MIN_ROWS as u32 {
+    if (n as usize) < fit_min_rows(kk + 2) {
         return 0.0;
     }
     let sst = syy - sy * sy / n as f64;
@@ -258,7 +361,7 @@ pub(crate) fn affine_monomial_best(
     qn: usize,
 ) -> (f64, Option<Vec<f64>>) {
     let q = qn.min(resid.len());
-    if q < MONOMIAL_FIT_MIN_ROWS {
+    if q < fit_min_rows(inputs.len() + 2) {
         return (0.0, None);
     }
     let mut basis: Vec<Vec<f64>> = Vec::with_capacity(inputs.len());
@@ -423,57 +526,6 @@ pub(crate) fn monomial_strings(exps: &[i32]) -> (String, String) {
         format!("({}/({}))", nums, den.join("*"))
     };
     (gexpr, format!("mono({})", dparts.join(",")))
-}
-
-pub(crate) fn monomial_col_from_sol(
-    sol: &[f64],
-    features: &[Vec<f64>],
-    n_cols: usize,
-    sample_n: usize,
-) -> Vec<f64> {
-    let mut mbuf = vec![f64::NAN; sample_n];
-    for k in 0..sample_n {
-        let mut p = 1.0f64;
-        let mut ok = true;
-        for c in 0..n_cols {
-            let e = round_clamp_exp(sol[c], &MONO_VCOL);
-            if e != 0 {
-                let v = features[c][k];
-                if v == 0.0 && e < 0 {
-                    ok = false;
-                    break;
-                }
-                p *= v.powi(e);
-            }
-        }
-        mbuf[k] = if ok && p.is_finite() { p } else { f64::NAN };
-    }
-    mbuf
-}
-
-pub(crate) fn monomial_gexpr_expanded(sol: &[f64], n_cols: usize) -> String {
-    let mut num: Vec<String> = Vec::new();
-    let mut den: Vec<String> = Vec::new();
-    for c in 0..n_cols {
-        let e = round_clamp_exp(sol[c], &MONO_VCOL);
-        for _ in 0..e.abs() {
-            if e > 0 {
-                num.push(format!("x{}", c + 1));
-            } else {
-                den.push(format!("x{}", c + 1));
-            }
-        }
-    }
-    let mg = if num.is_empty() {
-        "1".to_string()
-    } else {
-        num.join("*")
-    };
-    if den.is_empty() {
-        mg
-    } else {
-        format!("(({})/({}))", mg, den.join("*"))
-    }
 }
 
 pub(crate) fn fit_shell_const(

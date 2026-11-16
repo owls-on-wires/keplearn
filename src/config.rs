@@ -33,53 +33,10 @@ pub(crate) const MAX_VCOLS: usize = 8;
 pub(crate) const MONO_TERM_CAP: usize = 4;
 /// Cap on trace `harvest` decision events.
 pub(crate) const HARVEST_EV_CAP: u64 = 500;
-/// Safety ceiling on disjoint-pair partitions scanned per difference-sum firing.
-/// disjoint_pair_partitions emits partitions deterministically fewest-pairs-first, so
-/// this ceiling (large; only bites at extreme arity) can only ever drop the
-/// highest-pair-count partitions, never the low-arity partition a target needs.
-pub(crate) const SUMSQ_VISIT_CAP: usize = 3000;
-/// General norm-combiner composite-V generator (roadmap #2): max column-subset size
-/// for Σx² / sqrt(Σx²) norms. Corpus-max + headroom: physical norms combine ≤4
-/// coordinates; a searched ceiling on subset size, not a menu.
-pub(crate) const NORM_MAX_ACTIVE: usize = 4;
-/// Safety ceiling on norm column-subsets enumerated per firing. The subset budget is
-/// DATA-KEYED via engine::norm_subset_budget(n_cols) to cover EVERY subset of size
-/// 2..=NORM_MAX_ACTIVE (Σ C(n_cols,s)); this const is only the hard ceiling guarding
-/// pathological arity. Subsets are emitted size-ascending, so if the ceiling ever
-/// binds it drops the largest subsets first, never the small one a target needs.
-pub(crate) const NORM_SUBSET_CAP: usize = 300;
-/// Trig-composite argument grammar cap (E7 unified generator): max candidate
-/// oscillatory arguments u (single columns, products, column·difference) enumerated
-/// per firing before the trig shapes (sin/cos^p, sinc²) are applied.
-pub(crate) const TRIG_ARG_CAP: usize = 96;
-/// P2: trig-shape parameters are SEARCHED ranges, not hand-picked menus. The power p
-/// sweeps the contiguous integer range 1..=TRIG_POW_MAX (was the tuned menu {2,4});
-/// the argument scale s sweeps the subharmonic set 1/n for n in 1..=TRIG_SCALE_HARM
-/// (was the tuned pair {1, ½}). composite_bake's near-exact r² gate selects which
-/// (s,p) the data actually supports, so the parameter is fit-derived, not corpus-set.
-/// Both ceilings are "corpus-max + headroom": p≤4 covers sin²/sin⁴ and adds odd
-/// powers; the 3rd subharmonic covers half-angle (½) plus one beyond. General
-/// searched-range bounds, widenable without touching the mechanism.
-pub(crate) const TRIG_POW_MAX: i32 = 4;
-pub(crate) const TRIG_SCALE_HARM: usize = 3;
-/// Phase 2A: searched exponents for the general pow(composite, k) divide-factor
-/// (over the sub/div composites). k=2 reproduces the former dedicated subsq=(a−b)²
-/// and sqdiv=(a/b)² ops; 0.5 and 3 make sqrt-of-composite and cubes equally reachable
-/// (a searched power set rather than the square alone). k=-1 adds the
-/// reciprocal-difference factor 1/(a−b) (and 1/(a/b) = b/a): a deliberate config
-/// improvement that makes forms like Feynman II_21_32 and II_11_3 reachable (they
-/// solve at every seed once the holdout scorer is leverage-trimmed; see math.rs).
-pub(crate) const POW_K_SET: &[f64] = &[0.5, 2.0, 3.0, -1.0];
-/// P2: difference-sum norm partition counts are a SEARCHED range 1..=NORM_PARTITION_MAX
-/// (capped by n_cols/2), not the tuned menu {3,2}. P=1 adds the single squared
-/// difference; the composite_bake gate selects the partition the data supports.
-/// Corpus-max + headroom: ≤3 disjoint difference-pairs covers the 3D distance forms.
-pub(crate) const NORM_PARTITION_MAX: usize = 3;
-/// Force-seed the top-K correlating atoms as guaranteed starts of the k-monomial
-/// matching pursuit (so the greedy pursuit cannot miss a strong-but-not-first atom).
-/// A general matching-pursuit warm-start count, capped by the term budget
-/// engine::mono_terms(n_cols); size-invariant, not corpus-tuned.
-pub(crate) const FSEED_TOP: usize = 3;
+/// Searched exponents for the general pow(composite, k) divide-factor (over the
+/// sub/div composites): the grammar's core exponents (`Q::CORE`: ±½, ±1, ±2)
+/// other than 1, which is the composite itself (0.1 used ½, 2, 3, −1).
+pub(crate) const POW_K_SET: &[f64] = &[-2.0, -1.0, -0.5, 0.5, 2.0];
 
 // ── Confirm / exit criteria ─────────────────────────────────────────────────
 
@@ -190,40 +147,18 @@ pub(crate) const CONSTANTS: &[(&str, f64)] = &[
 /// Denominators tried for the rational multiple p/q of each CONSTANTS base.
 pub(crate) const SNAP_DENOMS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 
-/// Monomial EXPONENT snap lattice (config-driven; was a hardcoded half-integer grid).
-/// The harvest snaps each fitted log-linear exponent βᵢ to the nearest rational p/q
-/// with q ∈ EXP_DENOMS. Widened from halves-only {1,2} to include thirds and quarters
-/// {1,2,3,4}, so allometric 3/4 / 2/3 and Cobb-Douglas-style rational exponents become
-/// reachable in addition to the sqrt-heavy half-integers. Coarse (q≤4) on purpose:
-/// exponents are low-complexity, and the downstream near-exact monomial refit rejects
-/// any spurious snap. EXP_SNAP_TOL is the max |βᵢ − p/q| for the fit to count as clean.
-pub(crate) const EXP_DENOMS: &[u32] = &[1, 2, 3, 4];
+/// Monomial exponent snapping: each fitted log-linear exponent βᵢ snaps to the
+/// nearest of the grammar's exponents (`Q::ALL`) or 0 (math::snap_exp; 0.1
+/// snapped to p/q with q ≤ 4). EXP_SNAP_TOL is
+/// the max |βᵢ − q| for the fit to count as clean.
 pub(crate) const EXP_SNAP_TOL: f64 = 0.06;
 
 // ── Structural pre-signals (self-selecting capability deployment) ────────────
-
-/// structural-invisibility pre-signal: no single-column |corr| above this.
-pub(crate) const INVIS_CORR: f64 = 0.5;
-/// structural-invisibility pre-signal: no single-monomial log-linear r2 above this.
-pub(crate) const INVIS_MONO: f64 = 0.5;
-/// residual-near-miss pre-signal band (strong-but-inexact monomial fit).
-pub(crate) const NEAR_LO: f64 = 0.99;
-pub(crate) const NEAR_HI: f64 = 0.9999;
 
 // ── Fit-quality gates (composite-bake / clean-monomial / affine) ─────────────
 // Behavior-preserving relocation of formerly-inline gates (configurability pass).
 // Values are UNCHANGED from their prior scattered literals.
 
-/// Near-exact r² a composite-V bake (target/V or target·V fitted as an affine
-/// monomial) must reach to emit a finalist. Shared by composite_bake, the log-space
-/// r² inside clean_monomial_fit, and trig_clean_bake's reconstruction check.
-pub(crate) const COMPOSITE_R2: f64 = 0.9999;
-/// clean_monomial_fit: max |eᵢ − round(eᵢ)| for the log-LS exponent vector to count
-/// as a TIGHT integer monomial (the M4 discriminator separating a true
-/// multiplicative trig-composite from a coincidental affine near-fit).
-pub(crate) const CLEAN_MONO_INT_TOL: f64 = 0.05;
-/// clean_monomial_fit: reject a recovered clean monomial whose total |degree| exceeds this.
-pub(crate) const CLEAN_MONO_DEG_CAP: i32 = 12;
 /// affine_trivial: an affine fit within these of identity (scale≈1, offset≈0) is
 /// treated as no-op, so baking it in would only add noise-induced constants.
 pub(crate) const AFFINE_SCALE_TOL: f64 = 0.01;
@@ -251,33 +186,6 @@ pub(crate) const NICE_SNAP_BAND: f64 = 0.02;
 pub(crate) const NICE_TIE_SLACK: f64 = 1e-6;
 
 // ── k-monomial joint-LS harvest gates (harvest_k_monomial) ───────────────────
-/// Convergence r² at/above which the reseed / swap / nudge refinements stop.
-pub(crate) const KMONO_CONVERGE_R2: f64 = 0.99999;
-/// Coordinate-descent swap and full-arity exponent-nudge sweep caps.
-pub(crate) const KMONO_SWAP_SWEEPS: usize = 4;
-pub(crate) const KMONO_NUDGE_SWEEPS: usize = 6;
-/// Minimum best-r² for the full-arity nudge to engage (a promising but non-exact split).
-pub(crate) const KMONO_NUDGE_FLOOR: f64 = 0.5;
-/// top-frac first-fit keeps the top NUM/DEN of |residual| rows (min MIN) as the mask.
-pub(crate) const KMONO_TOPFRAC_NUM: usize = 6;
-pub(crate) const KMONO_TOPFRAC_DEN: usize = 10;
-pub(crate) const KMONO_TOPFRAC_MIN: usize = 12;
-/// Strict-improvement epsilon for a swap/nudge to be accepted.
-pub(crate) const IMPROVE_EPS: f64 = 1e-9;
-/// Verified combined r² a k-monomial decomposition must reach to force a finalist.
-pub(crate) const KMONO_FINALIST_R2: f64 = 0.999;
-/// Minimum per-term degree for a forced k-column joint-LS finalist (search.rs call
-/// site). Lowered 3 → 2 to reach three-deg-2-product targets (e.g. I_11_19). NOTE:
-/// deg-2 terms are already pairwise-reachable, so a lower floor can spawn spurious
-/// k-col finalists on low-arity roots (displacement/regression risk; watch closely).
-pub(crate) const KMONO_KCOL_MIN_DEG: i32 = 2;
-/// Dense low-degree backward-elimination fallback (conditioning-robust additive
-/// harvest): for arity <= KMONO_DENSE_MAX_VARS, fit the full positive-exponent monomial
-/// basis up to total degree KMONO_DENSE_DEG, then prune to the exact sparse set. Recovers
-/// sign-flipping / near-zero polynomial sums (Strogatz lv1/lv2) the greedy pursuit
-/// mis-selects. Kept small so the basis (and its O(basis^2) elimination) stays cheap.
-pub(crate) const KMONO_DENSE_MAX_VARS: usize = 3;
-pub(crate) const KMONO_DENSE_DEG: i32 = 3;
 
 // ── Monomial / pair-column emission floors ───────────────────────────────────
 /// mono_fit: minimum arity (number of active inputs) for the log-linear power-law
@@ -294,31 +202,13 @@ pub(crate) const PAIR_VCOL_MIN_R2: f64 = 0.15;
 pub(crate) const IO_NEAREXACT_R2: f64 = 0.9999;
 /// Progress margin: a spawned shell must raise harvest_la by at least this to spawn.
 pub(crate) const SHELL_PROGRESS_MARGIN: f64 = 0.02;
-/// affc∘log lookahead: min log-monomial r² to spawn the fitted-constant (affc) node.
-pub(crate) const AFFC_LOOKAHEAD_R2: f64 = 0.999;
 /// Divide progress epsilon: a divide must raise harvest_cheap by at least this to be
 /// ordered ahead of the non-progress tail within its plane.
 pub(crate) const DIVIDE_PROGRESS_EPS: f64 = 0.005;
 /// Additive-factor divide: min monomial log-linear r² to promote to the near-exact plane.
 pub(crate) const ADDITIVE_PROMO_R2: f64 = 0.999;
-/// General additive-assembly (generators::gen_additive_finalists): max arity at which the
-/// peel-a-term-then-fit-the-residual-with-a-generator pass runs (kept low so the
-/// per-first-term generator sweeps stay cheap; the Strogatz/2-var additive forms it
-/// targets are low-arity). Reaches heterogeneous sums (monomial + trig / rational).
-pub(crate) const ADDITIVE_MAX_VARS: usize = 3;
-/// Additive-assembly acceptance: a [T1, V] joint fit is emitted only at this (very tight)
-/// combined r². Keeps close-fitting approximations from being credited;
-/// only a near-exact heterogeneous sum clears the bar.
-pub(crate) const ADDITIVE_ASSEMBLY_R2: f64 = 0.99999;
 
 // ── Emission-time affine recalibration (driver output stage) ─────────────────
-/// Minimum plain-R² gain for baking a full-data affine calibration (a·model+b)
-/// into an emitted model string. The engine fits and selects models up to
-/// affine equivalence; on messy data the literal emitted member of that family
-/// can be badly calibrated in original units. Recalibration emits the best
-/// member instead when the gain clears this floor, so exact-law outputs
-/// (gain ≈ 0, a≈1/b≈0) keep their byte-identical strings.
-pub(crate) const RECAL_MIN_GAIN: f64 = 1e-6;
 
 // ── Constant snapping (math::snap_value / snap_model_constants) ───────────────
 /// Reject snapping a fitted constant whose magnitude is at/above this (out of range).
@@ -329,13 +219,6 @@ pub(crate) const SNAP_MULT_MAX: f64 = 8.0;
 pub(crate) const SNAP_TOL_REL: f64 = 0.006;
 pub(crate) const SNAP_TOL_ABS: f64 = 1e-3;
 pub(crate) const SNAP_TOL_GRIDFRAC: f64 = 0.35;
-/// snap_model_constants: a fitted coefficient within this fraction of the max |coef|
-/// magnitude is treated as a candidate zero.
-pub(crate) const SNAP_ZERO_FRAC: f64 = 0.05;
-/// snap_model_constants: holdout r² slack = (1−base_rh)·SNAP_HOLDOUT_SLACK + eps.
-pub(crate) const SNAP_HOLDOUT_SLACK: f64 = 0.05;
-/// snap_model_constants: reject a model carrying more than this many snapped constants.
-pub(crate) const SNAP_MAX_COUNT: usize = 8;
 
 // ── Dataset holdout split / output policy (io.rs) ─────────────────────────────
 /// Fixed holdout-shuffle seed. The internal 75/25 MDL-holdout split ALWAYS uses this
@@ -345,11 +228,15 @@ pub(crate) const SNAP_MAX_COUNT: usize = 8;
 /// poles score ~1.0 on any split, so no seed can displace the true form.) Value is the
 /// golden-ratio odd constant that was the former per-run default.
 pub(crate) const HOLDOUT_SHUFFLE_SEED: u64 = 0x9E3779B97F4A7C15;
-/// Minimum row count for a MDL holdout split to activate; the split takes 1/FRAC_DEN.
-pub(crate) const HOLDOUT_MIN_ROWS: usize = 40;
+/// The holdout takes 1/FRAC_DEN of the rows, at least HOLDOUT_MIN_ACTIVE and at
+/// most HOLDOUT_MAX of them; below HOLDOUT_MIN_ROWS (the row count at which a
+/// quarter reaches HOLDOUT_MIN_ACTIVE) there is no holdout, every row is a
+/// training row, and answers are scored by leave-one-out. (0.1 set a quarter
+/// of the rows aside from 40 rows but scored on them only from 80, so tables
+/// of 40 to 79 rows lost a quarter of their rows.)
 pub(crate) const HOLDOUT_FRAC_DEN: usize = 4;
-/// Minimum holdout size to actually use the split, and the absolute holdout cap.
 pub(crate) const HOLDOUT_MIN_ACTIVE: usize = 20;
+pub(crate) const HOLDOUT_MIN_ROWS: usize = HOLDOUT_FRAC_DEN * HOLDOUT_MIN_ACTIVE;
 pub(crate) const HOLDOUT_MAX: usize = 2000;
 /// Holdout magnitude-outlier trim: only trim when ≥ this many finite holdout rows,
 /// trimming the top 1/TRIM_DEN of magnitudes (min TRIM_MIN rows).
@@ -389,10 +276,6 @@ pub(crate) const ROOT_BEAM_SLACK: usize = 4;
 /// right by BEAM_DEPTH_SHIFT * depth). The kept set stays a superset of the flat
 /// BEAM_BY_DEPTH floor regardless.
 pub(crate) const BEAM_DEPTH_SHIFT: usize = 2;
-/// Cap on the monomial-exponent dictionary size (harvest k-monomial atom enum).
-pub(crate) const DICT_ATOM_CAP: usize = 4000;
-/// Max total |degree| (Σ|exp|) of a dictionary atom kept in the k-monomial enum.
-pub(crate) const DICT_ATOM_MAX_DEG: i32 = 10;
 /// Extra deflation rounds beyond the term budget in the root additive-vcol harvest
 /// (harvest_monomial_vcols iterates max_terms + PURSUIT_EXTRA_ROUNDS times).
 pub(crate) const PURSUIT_EXTRA_ROUNDS: usize = 3;
@@ -400,22 +283,90 @@ pub(crate) const PURSUIT_EXTRA_ROUNDS: usize = 3;
 /// COUPLED to KMONO_KCOL_MIN_DEG; both gate additive-monomial degree; if you sweep
 /// one, consider the other. Kept at its current value here.
 pub(crate) const HARVEST_VCOL_MIN_DEG: i32 = 3;
-/// Min finite rows for the k-column joint-LS verification (combined_r2_k; f64 count).
-pub(crate) const KMONO_COMBINED_MIN_ROWS: f64 = 8.0;
 /// Max nonzero exponents kept in a mono_fit monomial (rejects overly dense fits).
 pub(crate) const MONO_FIT_EXP_CAP: usize = 8;
 /// Max valid rows a masked-divide residual may retain and still spawn a divide child
 /// (search caps min_finite_rows at this before gating).
 pub(crate) const DIV_MIN_VALID_ROWS_CAP: usize = 50;
-/// Min rows for the offset log-linear fit (fit::loglin_r2_at).
-pub(crate) const LOGLIN_MIN_ROWS: usize = 8;
-/// Min rows for the log-linear / affine monomial fits (fit: monomial_loglin_r2,
-/// affine_monomial_r2).
-pub(crate) const MONOMIAL_FIT_MIN_ROWS: usize = 16;
-/// Min rows for the monomial / k-monomial harvesters, mono_fit, and clean_monomial_fit.
-pub(crate) const HARVEST_MIN_ROWS: usize = 24;
+/// Rows a fit of `p` parameters needs: `p` plus the surplus that could
+/// contradict it (`crate::forms::fit::fit_min_rows`; 0.1 used fixed minimums
+/// of 8, 16 and 24 rows).
+pub(crate) fn fit_min_rows(p: usize) -> usize {
+    crate::forms::fit::fit_min_rows(p)
+}
+
+/// Rounding floor (relative to the target's variance) below which data count
+/// as unrounded: 12-digit cells give about 1e-24.
+pub(crate) const NOISE_FLOOR_MIN: f64 = 1e-18;
+/// Finalists whose rounding floor is computed (those with a fit r² within
+/// FLOOR_FIT_SLACK of the best, at most FLOOR_FINALISTS); the smallest is used.
+pub(crate) const FLOOR_FINALISTS: usize = 30;
+pub(crate) const FLOOR_FIT_SLACK: f64 = 0.01;
+/// Best fit r² from which a rounding floor is estimated at all.
+pub(crate) const FLOOR_MIN_FIT: f64 = 0.999;
+/// A fit counts as exact when its unexplained variance is at most this many
+/// rounding floors (measured on tables rounded to 3 and 4 significant digits).
+pub(crate) const NOISE_FLOOR_K: f64 = 3.0;
+
+/// Standard errors within which a fitted constant snaps to a simple value
+/// on a fit short of exact.
+pub(crate) const SNAP_Z: f64 = 1.0;
+
+/// Share of the training rows a finalist must be defined on to be scored by
+/// leave-one-out (below HOLDOUT_MIN_ROWS; as HOLDOUT_COVER_* above it).
+pub(crate) const LOO_COVER: f64 = 0.9;
+
+/// Rows from which the constant fitter scores a fit on its own seeded split.
+pub(crate) const FIT_SPLIT_MIN_ROWS: usize = 40;
+
+/// The fitting and scoring rows of the constant fitter for `n` rows: its
+/// seeded split, or every row for both below FIT_SPLIT_MIN_ROWS, where the
+/// split's quarter (two rows at eight) cannot score a fit.
+pub(crate) fn fit_split(n: usize) -> (Vec<usize>, Vec<usize>) {
+    if n < FIT_SPLIT_MIN_ROWS {
+        ((0..n).collect(), (0..n).collect())
+    } else {
+        crate::forms::fit::split_indices(n, 1)
+    }
+}
 
 // ── Input limits (driver ingest) ─────────────────────────────────────────────
 /// Stdin byte cap: a runaway or absurdly large pipe errors cleanly instead of
 /// exhausting memory. 1 GiB covers every corpus in scope by a wide margin.
 pub(crate) const INPUT_BYTE_CAP: u64 = 1 << 30;
+
+/// Basis-terminal calls allowed at depth 1 per run (after the first shell
+/// or division), in place of 0.1's 2-term
+/// monomial fit there; a basis pursuit costs far more than that fit, so the
+/// first nodes reached in priority order get it.
+pub(crate) const BASIS_DEPTH1_CAP: usize = 32;
+/// Argument range (absolute for exp, sin, cos; relative otherwise) below
+/// which a unary or group of an exact finalist counts as near its linear
+/// regime, so the finalist bounds the search instead of ending it
+/// (guard::exit_check). Wider than the search's 3e-2: over a range of 0.5
+/// sin's cubic term is a few percent, and a pair of such unaries can cancel
+/// it (sin(u) + arcsin(u) ≈ 2u).
+pub(crate) const EXIT_DEGENERATE_REL: f64 = 0.5;
+/// Depth-1 basis nodes whose basis terminal also screens the product
+/// library (the highest ranked of the BASIS_DEPTH1_CAP; the root always
+/// does): all of them.
+pub(crate) const PRODUCT_DEPTH1_CAP: usize = BASIS_DEPTH1_CAP;
+
+/// structural constants (guard::structural_constant): rationals p/q with
+/// |p| and q at most this
+pub(crate) const STRUCT_RATIONAL_MAX: f64 = 12.0;
+/// the per-row precision check (guard::fits_each_row) applies to a target
+/// of one sign whose largest magnitude is at least this times its smallest
+pub(crate) const REL_SPAN: f64 = 1e3;
+/// the relative error each row is allowed beyond its rounding variance
+/// (full-precision cells: a true form fits to near machine precision)
+pub(crate) const REL_EXACT_EPS: f64 = 1e-8;
+/// conditioning (guard::well_conditioned): a term below this fraction of
+/// its sum is negligible; terms whose magnitudes exceed their sum by this
+/// factor cancel
+pub(crate) const COND_NEGLIGIBLE: f64 = 1e-9;
+pub(crate) const COND_CANCEL_MAX: f64 = 1e6;
+
+/// the share of a --timeout budget the search may use; the rest is for
+/// the answers' assembly (floor, canonical stage, scoring)
+pub(crate) const SEARCH_SHARE: f64 = 0.8;

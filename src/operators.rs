@@ -46,13 +46,6 @@ fn unary_registry() -> &'static [UnaryOpDef] {
                 render: |g| format!("sqrt({})", g),
             },
             UnaryOpDef {
-                name: "abs",
-                cost: 2,
-                factor: true,
-                apply: |x| x.abs(),
-                render: |g| format!("abs({})", g),
-            },
-            UnaryOpDef {
                 name: "neg",
                 cost: 2,
                 factor: false,
@@ -93,6 +86,54 @@ fn unary_registry() -> &'static [UnaryOpDef] {
                 factor: true,
                 apply: |x| x.tanh(),
                 render: |g| format!("tanh({})", g),
+            },
+            UnaryOpDef {
+                name: "arcsin",
+                cost: 2,
+                factor: true,
+                apply: |x| if x.abs() <= 1.0 { x.asin() } else { f64::NAN },
+                render: |g| format!("arcsin({})", g),
+            },
+            UnaryOpDef {
+                name: "arccos",
+                cost: 2,
+                factor: true,
+                apply: |x| if x.abs() <= 1.0 { x.acos() } else { f64::NAN },
+                render: |g| format!("arccos({})", g),
+            },
+            UnaryOpDef {
+                name: "arctan",
+                cost: 2,
+                factor: true,
+                apply: |x| x.atan(),
+                render: |g| format!("arctan({})", g),
+            },
+            UnaryOpDef {
+                name: "sq",
+                cost: 2,
+                factor: true,
+                apply: |x| x * x,
+                render: |g| format!("(({})**2)", g),
+            },
+            UnaryOpDef {
+                name: "inv2",
+                cost: 2,
+                factor: true,
+                apply: |x| {
+                    if x.abs() > 1e-10 {
+                        1.0 / (x * x)
+                    } else {
+                        f64::NAN
+                    }
+                },
+                render: |g| format!("(({})**(-2))", g),
+            },
+            UnaryOpDef {
+                name: "invsqrt",
+                cost: 2,
+                factor: true,
+                apply: |x| if x > 1e-30 { x.powf(-0.5) } else { f64::NAN },
+                render: |g| format!("(({})**(-0.5))", g),
             },
         ]
     })
@@ -271,6 +312,47 @@ fn shell_registry() -> &'static [ShellDef] {
                 invert: |e| format!("arccos({})", e),
             },
             ShellDef {
+                name: "pow-2",
+                cost: 2,
+                spawn_default: true,
+                apply: |y| if y > 1e-30 { y.powi(-2) } else { f64::NAN },
+                invert: |e| format!("(({})**(-0.5))", e),
+            },
+            ShellDef {
+                name: "pow-0.5",
+                cost: 2,
+                spawn_default: true,
+                apply: |y| if y > 1e-30 { y.powf(-0.5) } else { f64::NAN },
+                invert: |e| format!("(({})**(-2))", e),
+            },
+            ShellDef {
+                name: "arcsin",
+                cost: 2,
+                spawn_default: true,
+                apply: |y| if y.abs() <= 1.0 { y.asin() } else { f64::NAN },
+                invert: |e| format!("sin({})", e),
+            },
+            ShellDef {
+                name: "arccos",
+                cost: 2,
+                spawn_default: true,
+                apply: |y| if y.abs() <= 1.0 { y.acos() } else { f64::NAN },
+                invert: |e| format!("cos({})", e),
+            },
+            ShellDef {
+                name: "tan",
+                cost: 2,
+                spawn_default: true,
+                apply: |y| {
+                    if y.abs() < std::f64::consts::FRAC_PI_2 {
+                        y.tan()
+                    } else {
+                        f64::NAN
+                    }
+                },
+                invert: |e| format!("arctan({})", e),
+            },
+            ShellDef {
                 name: "atanh",
                 cost: 2,
                 spawn_default: true,
@@ -299,6 +381,11 @@ pub(crate) fn shells() -> Vec<(&'static str, usize)> {
     shell_registry()
         .iter()
         .filter(|s| s.spawn_default)
-        .map(|s| (s.name, s.cost))
+        .map(|s| {
+            let added = crate::expr::Parser::parse(&(s.invert)("x1"))
+                .map(|p| p.node_count().saturating_sub(1).max(1))
+                .unwrap_or(s.cost);
+            (s.name, added)
+        })
         .collect()
 }

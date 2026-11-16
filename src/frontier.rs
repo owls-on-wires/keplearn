@@ -63,7 +63,7 @@ pub(crate) struct StructKey {
 
 pub(crate) fn is_structural(r: Option<&Red>) -> bool {
     match r {
-        Some(Red::Shell { .. }) | Some(Red::Affc { .. }) => true,
+        Some(Red::Shell { .. }) | Some(Red::ShellAff { .. }) => true,
         Some(Red::Div { cost, .. }) => *cost >= 3,
         _ => false,
     }
@@ -105,7 +105,7 @@ impl Frontier {
         });
         let kind = if matches!(
             n.chain.last(),
-            Some(Red::Shell { .. }) | Some(Red::Affc { .. })
+            Some(Red::Shell { .. }) | Some(Red::ShellAff { .. })
         ) {
             1u8
         } else {

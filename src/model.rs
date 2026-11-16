@@ -10,8 +10,10 @@ pub(crate) enum Red {
     Shell {
         name: String,
     },
-    Affc {
-        c: f64,
+    ShellAff {
+        name: String,
+        a: f64,
+        b: f64,
     },
     Mat {
         desc: String,
@@ -22,7 +24,7 @@ pub(crate) fn red_desc(r: &Red) -> String {
     match r {
         Red::Div { desc, .. } => format!("div:{}", desc),
         Red::Shell { name, .. } => format!("shell:{}", name),
-        Red::Affc { c, .. } => format!("affc:{}", c),
+        Red::ShellAff { name, a, b } => format!("shellaff:{}:{}:{}", name, a, b),
         Red::Mat { desc, .. } => format!("mat:{}", desc),
     }
 }
@@ -46,6 +48,8 @@ pub(crate) struct Node {
     pub(crate) seq: u64,
     pub(crate) desc: String,
     pub(crate) forced_finalist: Vec<(String, f64)>,
+    pub(crate) basis_ok: bool,
+    pub(crate) product_ok: bool,
 }
 
 #[derive(Clone)]
@@ -106,7 +110,14 @@ pub(crate) fn invert_chain(chain: &[Red], upto: usize, inner: String) -> String 
         e = match red {
             Red::Div { gexpr, .. } => format!("({}*{})", gexpr, e),
             Red::Shell { name, .. } => shell_invert(name, &e),
-            Red::Affc { c, .. } => format!("(({}-1)/({}))", e, fmt_const(*c)),
+            Red::ShellAff { name, a, b } => {
+                format!(
+                    "({}*{}+{})",
+                    fmt_const(*a),
+                    shell_invert(name, &e),
+                    fmt_const(*b)
+                )
+            }
             Red::Mat { .. } => e,
         };
     }

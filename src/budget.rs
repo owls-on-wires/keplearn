@@ -1,17 +1,5 @@
 use crate::*;
 
-fn binom(n: usize, k: usize) -> usize {
-    if k > n {
-        return 0;
-    }
-    let k = k.min(n - k);
-    let mut r = 1usize;
-    for i in 0..k {
-        r = r * (n - i) / (i + 1);
-    }
-    r
-}
-
 pub(crate) fn root_beam(n_cols: usize) -> usize {
     let n_unary = unary_factor_ops().len();
     let n_pair: usize = pair_factor_ops()
@@ -47,34 +35,27 @@ pub(crate) fn mono_terms(n_cols: usize) -> usize {
     n_cols.clamp(2, MONO_TERM_CAP)
 }
 
-pub(crate) fn norm_subset_budget(n_cols: usize) -> usize {
-    let maxsz = NORM_MAX_ACTIVE.min(n_cols);
-    let total: usize = (2..=maxsz).map(|s| binom(n_cols, s)).sum();
-    total.min(NORM_SUBSET_CAP)
+thread_local! {
+    static DEADLINE : std::cell::Cell < Option < Instant >> = const {
+    std::cell::Cell::new(None) };
 }
 
-static DEADLINE_MS: AtomicU64 = AtomicU64::new(0);
-
-static CLOCK_START: OnceLock<Instant> = OnceLock::new();
-
 pub(crate) fn arm_deadline(timeout_ms: u64) {
-    let start = *CLOCK_START.get_or_init(Instant::now);
-    if timeout_ms > 0 {
-        let now_ms = start.elapsed().as_millis() as u64;
-        DEADLINE_MS.store(now_ms + timeout_ms, AtomicOrdering::Relaxed);
+    let d = if timeout_ms > 0 {
+        Some(Instant::now() + std::time::Duration::from_millis(timeout_ms))
     } else {
-        DEADLINE_MS.store(0, AtomicOrdering::Relaxed);
-    }
+        None
+    };
+    DEADLINE.with(|c| c.set(d));
+}
+
+pub(crate) fn arm_deadline_at(d: Option<Instant>) {
+    DEADLINE.with(|c| c.set(d));
 }
 
 #[inline]
 pub(crate) fn out_of_time() -> bool {
-    let d = DEADLINE_MS.load(AtomicOrdering::Relaxed);
-    if d == 0 {
-        return false;
-    }
-    match CLOCK_START.get() {
-        Some(s) => s.elapsed().as_millis() as u64 >= d,
-        None => false,
-    }
+    DEADLINE
+        .with(|c| c.get())
+        .is_some_and(|d| Instant::now() >= d)
 }
