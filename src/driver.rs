@@ -158,10 +158,20 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
             && header[..i].iter().any(|p| p.trim() == t)
             && !warnings.iter().any(|w| w.contains(&format!("'{}'", t)))
         {
-            warnings.push(format!(
-                "duplicate column name '{}' in header; the first occurrence is used",
-                t
-            ));
+            warnings
+                .push(
+                    if t == target_col {
+                        format!(
+                            "duplicate column name '{}' in header; the first such column is the target",
+                            t
+                        )
+                    } else {
+                        format!(
+                            "duplicate column name '{}' in header; the later columns are renamed '{}_2', '{}_3', ...",
+                            t, t, t
+                        )
+                    },
+                );
         }
     }
     if header.iter().all(|h| h.trim().parse::<f64>().is_ok())
@@ -280,6 +290,42 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
         .iter()
         .map(|&i| header[i].trim().to_string())
         .collect();
+    {
+        let mut seen: std::collections::HashMap<String, usize> = std::collections::HashMap::new();
+        for nm in names.iter_mut() {
+            let k = seen.entry(nm.clone()).or_insert(0);
+            *k += 1;
+            if *k > 1 {
+                *nm = format!("{}_{}", nm, k);
+            }
+        }
+    }
+    let mut j = 0;
+    while j < features.len() {
+        let nm = names[j].to_lowercase();
+        let named_index = nm.is_empty()
+            || matches!(
+                nm.as_str(),
+                "rownames" | "row.names" | "row_names" | "index" | "id"
+            )
+            || nm.starts_with("unnamed:");
+        let c = &features[j];
+        let counts = !c.is_empty()
+            && (c[0] == 0.0 || c[0] == 1.0)
+            && c.iter().enumerate().all(|(r, v)| *v == c[0] + r as f64);
+        if named_index && counts && features.len() > 1 {
+            warnings.push(format!(
+                "column '{}' is a row index (it counts the rows); it is dropped",
+                names[j]
+            ));
+            features.remove(j);
+            q_features.remove(j);
+            s_features.remove(j);
+            names.remove(j);
+        } else {
+            j += 1;
+        }
+    }
     let mut j = 0;
     while j < features.len() {
         let c = &features[j];
@@ -1513,13 +1559,39 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             .iter()
             .map(|e| crate::guard::has_saturated(&finalists[e.ci].model, &features, n_rows))
             .collect();
-        let mut keyed: Vec<(usize, bool, Entry)> = pool
+        let first_approx = pool.iter().find(|e| e.v == "approximate").map(|e| e.ci);
+        let reorder = hold_n == 0
+            && first_approx.is_some_and(|ci| {
+                crate::guard::largest_miss(&finalists[ci].model, &features, &target, n_rows)
+                    .is_some_and(|(m, _)| m > RANK_MISS_REL)
+            });
+        let rel: Vec<f64> = pool
+            .iter()
+            .map(|e| {
+                if e.v == "approximate" && reorder {
+                    crate::guard::relative_dl(
+                        &finalists[e.ci].model,
+                        &features,
+                        &target,
+                        n_cols,
+                        train_n,
+                        finalists[e.ci].nodes,
+                        hold_n == 0,
+                    )
+                    .unwrap_or(0.0)
+                } else {
+                    0.0
+                }
+            })
+            .collect();
+        let mut keyed: Vec<(usize, bool, f64, Entry)> = pool
             .into_iter()
             .zip(padded)
-            .map(|(e, p)| (rank(e.v), p, e))
+            .zip(rel)
+            .map(|((e, p), r)| (rank(e.v), p, r, e))
             .collect();
-        keyed.sort_by_key(|(r, p, _)| (*r, *p));
-        let mut pool: Vec<Entry> = keyed.into_iter().map(|(_, _, e)| e).collect();
+        keyed.sort_by(|a, b| (a.0, a.1).cmp(&(b.0, b.1)).then(a.2.total_cmp(&b.2)));
+        let mut pool: Vec<Entry> = keyed.into_iter().map(|(_, _, _, e)| e).collect();
         if let Some(top_resid) = pool.first().map(|e| e.resid) {
             for e in pool.iter_mut().skip(1) {
                 if e.v == "exact" && e.resid > NOISE_FLOOR_K * top_resid.max(1.0 - EXACT_EXIT_R2) {
@@ -1547,17 +1619,30 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             } else {
                 crate::guard::all_constants(&c.model)
             };
-            let why = e.why.or_else(|| match v {
-                "approximate" => Some(
-                    "the best fit leaves residuals above the precision the cells are written to"
-                        .to_string(),
-                ),
-                "no law found" => Some(format!(
-                    "the best fit (r2 = {:.4}) does not beat a constant by enough to be a law",
-                    out_r2[e.ci].unwrap_or(-1.0)
-                )),
-                _ => None,
-            });
+            let why = e
+                .why
+                .or_else(|| match v {
+                    "approximate" => {
+                        Some(
+                            format!(
+                                "the best fit leaves residuals above the precision the cells are written to{}",
+                                crate ::guard::largest_miss(& c.model, & features, & target,
+                                n_rows).map_or(String::new(), | (rel, y) |
+                                format!("; its largest miss is {:.2}% of the target's value (where the target is {})",
+                                100.0 * rel, crate ::output::tidy_number(y, 6)))
+                            ),
+                        )
+                    }
+                    "no law found" => {
+                        Some(
+                            format!(
+                                "the best fit (r2 = {:.4}) does not beat a constant by enough to be a law",
+                                out_r2[e.ci].unwrap_or(- 1.0)
+                            ),
+                        )
+                    }
+                    _ => None,
+                });
             let why = if v == "no law found" && train_n < min_law_rows() && free.unwrap_or(1) > 0 {
                 Some(
                     format!(

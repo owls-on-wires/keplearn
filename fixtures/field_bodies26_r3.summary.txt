@@ -1,6 +1,6 @@
-period_years = distance_au**(3/2) - 0.007         approximate (r2 = 1.0000, 26 rows)
+period_years = distance_au**(3/2) - 0.007         approximate (r2 = 0.9999999983, 26 rows)
 constants: 1 free
-why not exact: the best fit leaves residuals above the precision the cells are written to
+why not exact: the best fit leaves residuals above the precision the cells are written to; its largest miss is 3.01% of the target's value (where the target is 0.241)
 data: 26 rows, 1 column; rounding floor 1.9e-11 of the target's variance
 next best: period_years = 1.00002*distance_au**(5/2)/(distance_au + 0.003)    approximate
 note: column 'body' has no numeric values; it is dropped

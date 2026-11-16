@@ -199,6 +199,38 @@ pub(crate) fn all_constants(model: &str) -> Option<usize> {
     )
 }
 
+pub(crate) fn loo_refit_predictions(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n_cols: usize,
+    n: usize,
+) -> Option<Vec<Option<f64>>> {
+    let (e, f0) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let cfg = crate::forms::fit::FitConfig::default();
+    let cols: Vec<Vec<f64>> = features[..n_cols].iter().map(|c| c[..n].to_vec()).collect();
+    Some(
+        (0..n)
+            .map(|i| {
+                let rest: Vec<usize> = (0..n).filter(|&k| k != i).collect();
+                let xf = crate::forms::fit::gather(&cols, &rest);
+                let yf: Vec<f64> = rest.iter().map(|&k| target[k]).collect();
+                let xi = crate::forms::fit::gather(&cols, &[i]);
+                let fr = crate::forms::fit::refit_from(&e, &f0.inner, &xf, &yf, &xf, &yf, &cfg)?;
+                let t = crate::forms::nf::eval_terms(&e, &xi, &fr.fitted.inner);
+                let p = fr.fitted.offset
+                    + fr.fitted
+                        .coef
+                        .iter()
+                        .zip(&t)
+                        .map(|(c, g)| c * g[0])
+                        .sum::<f64>();
+                p.is_finite().then_some(p)
+            })
+            .collect(),
+    )
+}
+
 pub(crate) fn loo_refit_r2(
     model: &str,
     features: &[Vec<f64>],
@@ -531,4 +563,77 @@ pub(crate) fn padding_removable(
     let base = r2_of(&ast);
     sat.iter()
         .any(|&(at, v)| r2_of(&replace(&ast, at, v, &mut 0)) >= base - tol)
+}
+
+pub(crate) fn relative_dl(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n_cols: usize,
+    n: usize,
+    nodes: usize,
+    loo: bool,
+) -> Option<f64> {
+    use crate::config::RANK_REL_SPAN as REL_SPAN;
+    let rows: Vec<usize> = (0..n).filter(|&i| target[i].is_finite()).collect();
+    if rows.len() < 2 {
+        return None;
+    }
+    let pos = rows.iter().all(|&i| target[i] > 0.0);
+    let neg = rows.iter().all(|&i| target[i] < 0.0);
+    let lo = rows
+        .iter()
+        .map(|&i| target[i].abs())
+        .fold(f64::INFINITY, f64::min);
+    let hi = rows.iter().map(|&i| target[i].abs()).fold(0.0, f64::max);
+    if !(pos || neg) || !(hi >= REL_SPAN * lo) {
+        return None;
+    }
+    let preds: Vec<Option<f64>> = if loo {
+        loo_refit_predictions(model, features, target, n_cols, n)?
+    } else {
+        let ast = crate::forms::ast::parse(model).ok()?;
+        let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
+        (0..n)
+            .map(|i| Some(ast.eval(&cols, i)).filter(|p| p.is_finite()))
+            .collect()
+    };
+    let mut s = 0.0f64;
+    for &i in &rows {
+        let Some(p) = preds[i] else {
+            return Some(f64::INFINITY);
+        };
+        s += ((target[i] - p) / target[i]).powi(2);
+    }
+    let k = rows.len() as f64;
+    Some(0.5 * k * (s / k).max(1e-30).ln() + 0.5 * k.ln() * nodes as f64)
+}
+
+pub(crate) fn largest_miss(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+) -> Option<(f64, f64)> {
+    let ast = crate::forms::ast::parse(model).ok()?;
+    let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
+    let mut best: Option<(f64, f64)> = None;
+    for i in 0..n {
+        let y = target[i];
+        if !y.is_finite() {
+            continue;
+        }
+        if y == 0.0 {
+            return None;
+        }
+        let p = ast.eval(&cols, i);
+        if !p.is_finite() {
+            return None;
+        }
+        let r = ((y - p) / y).abs();
+        if best.is_none_or(|(b, _)| r > b) {
+            best = Some((r, y));
+        }
+    }
+    best
 }

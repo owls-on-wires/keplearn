@@ -1156,3 +1156,80 @@ fn a_precise_target_ends_the_search_early_and_wide_tables_keep_the_budget() {
     assert!(t0.elapsed().as_secs_f64() < 12.0, "{:?}", t0.elapsed());
     assert!(out.contains("feature columns"));
 }
+
+#[test]
+fn a_wide_span_target_ranks_approximate_answers_by_relative_misses() {
+    let t = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/nasa_planets_period.tsv"
+    ))
+    .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = "period_days".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        top.get("named").and_then(|v| v.as_str()),
+        Some("(5/(8*pi))*distance_1e6km**(3/2)")
+    );
+    let reason = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
+    assert!(reason.contains("largest miss"), "{}", reason);
+    assert!(crate::summary::render(
+        &run_text(&t, {
+            let mut c = test_cfg();
+            c.target_col = "period_days".to_string();
+            c
+        })
+        .unwrap()
+    )
+    .contains("r2 = 0.99995"));
+}
+
+#[test]
+fn row_index_columns_are_dropped_and_repeated_names_renamed() {
+    let mut s = 21u64;
+    let t: String = "rownames,a,b,y\n".to_string()
+        + &(1..=30)
+            .map(|k| {
+                let (a, b) = (0.5 + 4.0 * lcg(&mut s), 0.5 + 4.0 * lcg(&mut s));
+                format!("{},{},{},{}\n", k, a, b, a * b)
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    assert_eq!(
+        j.get("names")
+            .and_then(|n| n.get("columns"))
+            .and_then(|c| c.as_arr())
+            .map(|c| c.len()),
+        Some(2)
+    );
+    let t: String = "t,a,y\n".to_string()
+        + &(1..=30)
+            .map(|k| {
+                let a = 0.5 + 4.0 * lcg(&mut s);
+                format!("{},{},{}\n", k, a, a * k as f64)
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!((m.as_str(), v.as_str()), ("x1*x2", "exact"));
+    let t: String = "x,x,y\n".to_string()
+        + &(0..20)
+            .map(|_| {
+                let (a, b) = (0.5 + 4.0 * lcg(&mut s), 0.5 + 4.0 * lcg(&mut s));
+                format!("{},{},{}\n", a, b, a + b)
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(top.get("named").and_then(|v| v.as_str()), Some("x + x_2"));
+}

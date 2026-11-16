@@ -1,5 +1,25 @@
 # Changelog
 
+## 1.2.1
+
+- On a table of fewer than 80 rows whose target spans a factor of 100 or
+  more, when the first approximate answer misses some row by more than 5%,
+  approximate answers are ranked by their relative residuals (each row
+  predicted by leave-one-out):
+  Kepler's power law now leads on the NASA planet table, where a form bent
+  to the outer planets missed Mercury by 11%.
+- A row-index column (R's `rownames`, pandas' `Unnamed: 0`, `index`,
+  `id`, counting the rows) is dropped with a warning instead of being
+  fitted.
+- Repeated feature names are renamed `x_2`, `x_3`, ...: an answer no
+  longer reads `x + x`.
+- The `why not exact` reason states the answer's largest miss, and the
+  summary never prints `r2 = 1.0000` for an answer that is not exact.
+- `--pretty` with `--format summary` warns that it has no effect.
+- Documentation: the README's third example shows the output 1.2.0
+  prints; the reference's memory figure for wide tables and its statement
+  about noisy tables are corrected.
+
 ## 1.2.0
 
 The output schema is unchanged (`keplearn.result.v2`).

@@ -247,6 +247,11 @@ fn main() {
             std::process::exit(2);
         }
     }
+    if pretty && format == "summary" {
+        eprintln!(
+            "keplearn: --pretty indents the JSON output; it has no effect with --format summary"
+        );
+    }
     if std::io::stdin().is_terminal() {
         eprintln!("keplearn: no input on stdin; expects a TSV or CSV (see --help)");
         eprintln!("usage: keplearn [OPTIONS] < data.tsv");

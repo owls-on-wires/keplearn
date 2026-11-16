@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.2.0, result schema `keplearn.result.v2`.
+Version 1.2.1, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -44,7 +44,14 @@ is a literal quote. Blank lines are ignored.
   part within a budget.
 - A column with values beyond 1e150 gets a warning: their squares
   overflow, and laws over them may not be found. Rescale such a column.
-- A duplicated column name produces a warning.
+- A duplicated column name produces a warning; later feature columns
+  with the same name are renamed `name_2`, `name_3`, ... so that answers
+  read unambiguously.
+- A row index is not a variable: a feature column named as one (an empty
+  name, `rownames`, `row.names`, `row_names`, `index`, `id`, or a name
+  starting `Unnamed:`) whose values count up from 0 or 1 in row order is
+  dropped with a warning. R's and pandas' saved tables carry such a
+  column.
 
 **Rows.** A row is skipped, and counted in a warning, when it has a
 different number of fields from the header, or when the target or any
@@ -115,7 +122,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--top-k N` | 10 | the most answers to return (at least 1) |
 | `--timeout MS` | 60000 | the time budget in milliseconds; 0 is unbounded (see [time budget](#time-budget)) |
 | `--format json\|summary` | `json` | the JSON result, or a short report in the table's column names |
-| `--pretty` | off | indent the JSON |
+| `--pretty` | off | indent the JSON (with `--format summary` it has no effect, and a warning says so) |
 | `-o FILE`, `--out FILE` | stdout | write the result to FILE |
 | `--verbose` | off | print the search's progress lines on stderr |
 | `--timing` | off | add `time_ms` to the JSON |
@@ -126,7 +133,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.0`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.1`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -194,10 +201,14 @@ data: 60 rows, 3 columns; rounding floor 9.9e-7 of the target's variance
 next best: force = (2*sqrt(3)/3)*m1*m2**(3/4)*sqrt(arctan(m2))/r**2    approximate
 ```
 
-- line 1: the first answer in the column names, its verdict, `r2`, rows;
+- line 1: the first answer in the column names, its verdict, `r2`, rows
+  (`r2` to 4 decimals, or to as many as show it is below 1 on an answer
+  that is not exact: `0.999956`, never `1.0000`);
 - `constants`: the free constants, and whether snapped constants were
   written by name;
-- `why not exact`: the `reason`, when the verdict is `approximate`;
+- `why not exact`: the `reason`, when the verdict is `approximate`; it
+  ends with the answer's largest miss as a percentage of the target, and
+  the target value where it happens;
 - `data`: rows, columns, and the rounding floor (or `full precision`);
 - `next best`: the second answer and its verdict, when there is one;
 - `note`: each warning.
@@ -392,6 +403,13 @@ Answers are ordered by verdict: every `exact` answer first, then
   first);
 - from 80 rows: by description length on the held-out rows.
 
+Below 80 rows, when the target has one sign and spans a factor of 100 or
+more, and the first approximate answer misses some row by more than 5% of
+its value, approximate answers are ordered instead by the description
+length of their relative residuals ((y − p)/y), each row predicted by
+leave-one-out. On such a target r² is set by the largest values, and a form bent to
+them can miss the small rows by tens of percent.
+
 Within a verdict, an answer holding a saturated function (see rule 4
 above) comes after the answers without one.
 
@@ -430,8 +448,9 @@ finishes.
 
 An exact answer ends the search early (`stopped_by: exact_exit`) when its
 canonical form is exact, reduced, holds on the rows at the edges of the
-data, and is well conditioned. Noisy data never ends early, so a noisy
-table uses its whole budget.
+data, and is well conditioned. Noisy data never ends early: a noisy table
+runs until the search has nothing left to try or the budget is spent,
+which on all but small tables is usually the budget.
 
 ## Messages, exit status and determinism
 
@@ -469,15 +488,17 @@ and `--seed` has no effect. Two things break this:
   seconds and about 200 MB even for an easy law, and from about 40
   columns a 10-second budget is spent in the first step without finding
   a two-column law. The product library uses products of up to three
-  columns up to 21 columns and of two beyond, keeping memory near tens of
-  megabytes on wide tables.
+  columns up to 21 columns and of two beyond. Memory grows with how long
+  the search runs: a 40-column table stays in tens of megabytes on a
+  10-second budget, but reached about 550 MB finding its law in 40 s at
+  the default budget.
 - **Rows.** A table needs 5 rows to be searched; a law with k constants
   needs at least k + 3 rows to be exact. Five rows suffice for a law with
   no constant, six for a power law with one. Below 80
   rows the leave-one-out refits make scoring slower in proportion to the
   rows.
-- **Noise.** Noisy data gives `approximate` at best, and the search
-  spends its whole budget looking for an exact form. Set `--timeout` to
+- **Noise.** Noisy data gives `approximate` at best, and the search can
+  spend its whole budget looking for an exact form. Set `--timeout` to
   what you can afford.
 - **Precision of written numbers.** Precision is read from the digits as
   written. Values printed with spurious digits, such as `0.30000000000000004`,
