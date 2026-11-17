@@ -25,7 +25,7 @@ pub(crate) fn harvest_monomial_vcols(
     let mut out: Vec<VC> = Vec::new();
     let mut used: Vec<Vec<i32>> = Vec::new();
     for _iter in 0..(max_terms + PURSUIT_EXTRA_ROUNDS) {
-        if out_of_time() {
+        if out_of_budget() {
             break;
         }
         if out.len() >= max_terms {

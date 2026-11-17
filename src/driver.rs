@@ -17,6 +17,7 @@ pub struct Config {
     pub input_warnings: Vec<String>,
     pub verbose: bool,
     pub timing: bool,
+    pub max_memory_mb: u64,
 }
 
 pub(crate) fn split_row(line: &str, delim: char) -> Vec<String> {
@@ -152,12 +153,11 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     };
     let header: Vec<String> = split_row(head_line, delim);
     let mut warnings: Vec<String> = Vec::new();
-    for (i, h) in header.iter().enumerate() {
+    let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    let mut warned: std::collections::HashSet<&str> = std::collections::HashSet::new();
+    for h in header.iter() {
         let t = h.trim();
-        if !t.is_empty()
-            && header[..i].iter().any(|p| p.trim() == t)
-            && !warnings.iter().any(|w| w.contains(&format!("'{}'", t)))
-        {
+        if !seen_names.insert(t) && !t.is_empty() && warned.insert(t) {
             warnings
                 .push(
                     if t == target_col {
@@ -199,12 +199,24 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                     .join(", ")
             )
         })?;
-    let numeric = |i: usize| {
-        lines[1..].iter().any(|l| {
-            let vals = split_row(l.trim_end_matches('\r'), delim);
-            vals.len() == header.len() && vals[i].trim().parse::<f64>().is_ok_and(|v| v.is_finite())
-        })
-    };
+    let mut is_numeric = vec![false; header.len()];
+    let mut unseen = header.len();
+    for l in &lines[1..] {
+        if unseen == 0 {
+            break;
+        }
+        let vals = split_row(l.trim_end_matches('\r'), delim);
+        if vals.len() != header.len() {
+            continue;
+        }
+        for (i, v) in vals.iter().enumerate() {
+            if !is_numeric[i] && v.trim().parse::<f64>().is_ok_and(|v| v.is_finite()) {
+                is_numeric[i] = true;
+                unseen -= 1;
+            }
+        }
+    }
+    let numeric = |i: usize| is_numeric[i];
     let mut feat_idx: Vec<usize> = Vec::new();
     for i in (0..header.len()).filter(|&i| i != target_idx) {
         if header[i].trim() == target_col {
@@ -349,7 +361,28 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                 .into(),
         );
     }
-    if features.len() > WIDE_COLUMNS {
+    if features.len() > SCREEN_COLUMNS {
+        let keep = screen_columns(&features, &target, SCREEN_COLUMNS);
+        warnings
+            .push(
+                format!(
+                    "the table has {} feature columns; the search uses the {} most related to the target one at a time ({}), and laws are found far more readily in subsets of 2 to 5 columns",
+                    features.len(), SCREEN_COLUMNS, keep.iter().map(|& j | names[j]
+                    .as_str()).collect::< Vec < _ >> ().join(", ")
+                ),
+            );
+        fn pick<T>(v: &mut Vec<T>, keep: &[usize]) {
+            let mut i = 0;
+            v.retain(|_| {
+                i += 1;
+                keep.binary_search(&(i - 1)).is_ok()
+            });
+        }
+        pick(&mut features, &keep);
+        pick(&mut q_features, &keep);
+        pick(&mut s_features, &keep);
+        pick(&mut names, &keep);
+    } else if features.len() > WIDE_COLUMNS {
         warnings
             .push(
                 format!(
@@ -529,9 +562,12 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         input_warnings: cfg_input_warnings,
         verbose,
         timing,
+        max_memory_mb,
         ..
     } = cfg;
+    crate::heap::set_limit_mb(max_memory_mb);
     crate::output::set_verbose(verbose);
+    let t0 = Instant::now();
     let eff_max_depth = max_depth.unwrap_or(MAX_DEPTH).min(MAX_DEPTH);
     crate::guard::set_floor(0.0);
     let global_max_stack = 2usize;
@@ -731,13 +767,12 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         n_cols, n_rows
     ));
     let mut evaluator = Evaluator::new(global_max_stack, sample_n.max(hold_n));
-    let t0 = Instant::now();
     let search_ms = if timeout_ms > 0 {
         ((timeout_ms as f64 * SEARCH_SHARE) as u64).max(1)
     } else {
         0
     };
-    arm_deadline(search_ms);
+    arm_deadline_at((search_ms > 0).then(|| t0 + std::time::Duration::from_millis(search_ms)));
     let n_evaluated: u64 = 0;
     let qn = quick_n.min(sample_n);
     let h_lo = train_n;
@@ -840,13 +875,28 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
     let mut early = false;
     let mut bound: Option<usize> = None;
     let mut timed_out = false;
+    let mut memory_stop = false;
     let mut turn_ctr: u64 = 0;
     let mut any_expanded = false;
     let mut lane;
     'main: loop {
-        if search_ms > 0 && any_expanded && t0.elapsed().as_millis() as u64 >= search_ms {
+        if !timed_out
+            && search_ms > 0
+            && any_expanded
+            && t0.elapsed().as_millis() as u64 >= search_ms
+        {
             timed_out = true;
-            break;
+        }
+        if !timed_out && any_expanded && crate::heap::over_soft() {
+            timed_out = true;
+            memory_stop = true;
+        }
+        if timed_out {
+            let Some(node) = frontier.pop_forced() else {
+                break;
+            };
+            collect_forced(&node, &mut finalists);
+            continue;
         }
         lane = match turn_ctr % 3 {
             2 => {
@@ -1050,6 +1100,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             };
             let atoms = crate::fit::library_atoms(&features, n_cols, &rows);
             let score = |t: &[f64]| {
+                if out_of_budget() {
+                    return 0.0;
+                }
                 let tr: Vec<f64> = rows.iter().map(|&r| t[r]).collect();
                 crate::fit::joint_probe(t, &base_inputs, &basis)
                     .max(crate::fit::best_atom_r2(&tr, &atoms))
@@ -1202,7 +1255,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         );
         finalists.sort_by(|a, b| a.nodes.cmp(&b.nodes).then(b.gate_r2.total_cmp(&a.gate_r2)));
         for mut c in finalists.drain(..) {
-            if !kept.is_empty() && out_of_time() {
+            if !kept.is_empty() && out_of_budget() {
                 dropped += 1;
                 continue;
             }
@@ -1628,8 +1681,8 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                                 "the best fit leaves residuals above the precision the cells are written to{}",
                                 crate ::guard::largest_miss(& c.model, & features, & target,
                                 n_rows).map_or(String::new(), | (rel, y) |
-                                format!("; its largest miss is {:.2}% of the target's value (where the target is {})",
-                                100.0 * rel, crate ::output::tidy_number(y, 6)))
+                                format!("; its largest miss is {}% of the target's value (where the target is {})",
+                                percent(100.0 * rel), crate ::output::tidy_number(y, 6)))
                             ),
                         )
                     }
@@ -1678,10 +1731,16 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
     }
     if crate::output::verbose() {
-        eprintln!("stage results: {} ms", t0.elapsed().as_millis());
+        eprintln!(
+            "stage results: {} ms, heap {} MB",
+            t0.elapsed().as_millis(),
+            crate::heap::live_mb()
+        );
     }
     let stopped_by = if early {
         "exact_exit"
+    } else if memory_stop || (timed_out && crate::heap::over_soft()) {
+        "memory"
     } else if timed_out {
         "timeout"
     } else {
@@ -1830,4 +1889,88 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
     }
     Ok(rendered)
+}
+
+pub(crate) fn percent(p: f64) -> String {
+    if p != 0.0 && p.abs() < 0.01 {
+        crate::output::tidy_number(p, 2)
+    } else {
+        format!("{:.2}", p)
+    }
+}
+
+fn collect_forced(node: &Node, finalists: &mut Vec<Cand>) {
+    for (model, cr2) in &node.forced_finalist {
+        let Ok(parsed) = Parser::parse(model) else {
+            continue;
+        };
+        finalists.push(Cand {
+            model: model.clone(),
+            desc: node.desc.clone(),
+            expr: "two_mono".to_string(),
+            columns: Vec::new(),
+            scale: 1.0,
+            offset: 0.0,
+            fit_r2: *cr2,
+            gate_r2: *cr2,
+            nodes: parsed.node_count(),
+            root_raw: false,
+        });
+    }
+}
+
+fn screen_columns(features: &[Vec<f64>], target: &[f64], k: usize) -> Vec<usize> {
+    fn r2(a: &[f64], b: &[f64]) -> f64 {
+        let n = a.len() as f64;
+        if n < 3.0 {
+            return 0.0;
+        }
+        let (ma, mb) = (a.iter().sum::<f64>() / n, b.iter().sum::<f64>() / n);
+        let (mut sab, mut saa, mut sbb) = (0.0, 0.0, 0.0);
+        for (x, y) in a.iter().zip(b) {
+            sab += (x - ma) * (y - mb);
+            saa += (x - ma) * (x - ma);
+            sbb += (y - mb) * (y - mb);
+        }
+        if saa > 0.0 && sbb > 0.0 {
+            sab * sab / (saa * sbb)
+        } else {
+            0.0
+        }
+    }
+    let one_signed = |v: &[f64]| v.iter().all(|x| *x > 0.0) || v.iter().all(|x| *x < 0.0);
+    let views = |v: &[f64]| -> Vec<Vec<f64>> {
+        let mut out = vec![v.to_vec()];
+        if one_signed(v) {
+            out.push(v.iter().map(|x| x.abs().ln()).collect());
+        }
+        if v.iter().all(|x| *x != 0.0) {
+            out.push(v.iter().map(|x| 1.0 / x).collect());
+        }
+        out
+    };
+    let mut scored: Vec<(f64, usize)> = features
+        .iter()
+        .enumerate()
+        .map(|(j, c)| {
+            let rows: Vec<usize> = (0..target.len())
+                .filter(|&r| target[r].is_finite() && c[r].is_finite())
+                .collect();
+            let x: Vec<f64> = rows.iter().map(|&r| c[r]).collect();
+            let y: Vec<f64> = rows.iter().map(|&r| target[r]).collect();
+            let mut ys = vec![y.clone()];
+            if one_signed(&y) {
+                ys.push(y.iter().map(|v| v.abs().ln()).collect());
+            }
+            let best = views(&x)
+                .iter()
+                .flat_map(|g| ys.iter().map(move |h| r2(g, h)))
+                .fold(0.0f64, |a, b| if b.is_finite() { a.max(b) } else { a });
+            (best, j)
+        })
+        .collect();
+    scored.sort_by(|a, b| b.0.total_cmp(&a.0).then(a.1.cmp(&b.1)));
+    let mut keep: Vec<usize> = scored.into_iter().take(k).map(|(_, j)| j).collect();
+    keep.sort_unstable();
+    keep
 }

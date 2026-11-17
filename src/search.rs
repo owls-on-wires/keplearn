@@ -437,7 +437,7 @@ pub(crate) fn expand_children(
     }
     'pair_sweep: for ii in 0..n_gen {
         for jj in (ii + 1)..n_in {
-            if out_of_time() {
+            if out_of_budget() {
                 break 'pair_sweep;
             }
             for &(name, f, cost, swap) in &pair_factor_ops() {
@@ -475,7 +475,7 @@ pub(crate) fn expand_children(
     }
     'pow_sweep: for ii in 0..n_gen {
         for jj in (ii + 1)..n_in {
-            if out_of_time() {
+            if out_of_budget() {
                 break 'pow_sweep;
             }
             for &(bname, add_flag) in &[("sub", true), ("div", false)] {

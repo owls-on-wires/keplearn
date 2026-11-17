@@ -99,14 +99,30 @@ fn canonical_core(
     let stat_tol = |r2: f64| {
         crate::config::SNAP_Z * crate::config::SNAP_Z * (1.0 - r2).max(0.0) / yh.len().max(1) as f64
     };
+    let rows_ok = |e: &crate::forms::nf::Expr, fr: &crate::forms::fit::FitResult| {
+        let ans = crate::forms::nf::print_answer(e, &fr.fitted);
+        fits_each_row(&ans, features, target, train_n)
+            && within_rounding(&ans, features, target, train_n)
+            && well_conditioned(&ans, features, train_n)
+    };
     let fit = |e: &crate::forms::nf::Expr| -> Option<crate::forms::fit::FitResult> {
         let mut fr = crate::forms::fit::fit_expr(e, &xf, &yf, &xh, &yh, &cfg)?;
-        let tol = if fr.is_exact(&cfg) {
+        let exact = fr.is_exact(&cfg);
+        let tol = if exact {
             snap_tol
         } else {
             snap_tol.max(stat_tol(fr.r2_holdout))
         };
+        let pre = exact.then(|| fr.clone());
         crate::forms::search::snap(e, &mut fr, &xf, &yf, &xh, &yh, tol);
+        if let Some(mut alt) = pre {
+            if !inner_unchanged(&alt, &fr) && !rows_ok(e, &fr) {
+                crate::forms::search::snap_with(e, &mut alt, &xf, &yf, &xh, &yh, tol, false);
+                if rows_ok(e, &alt) {
+                    fr = alt;
+                }
+            }
+        }
         Some(fr)
     };
     let fr0 = fit(&e0)?;
@@ -123,7 +139,7 @@ fn canonical_core(
                 .into_iter()
                 .chain(crate::forms::repair::factor_drops(&cur.0, inner, &red_lim));
             for c in cands {
-                if crate::out_of_time() {
+                if crate::out_of_budget() {
                     break 'outer;
                 }
                 let Some(f) = fit(&c) else { continue };
@@ -149,7 +165,7 @@ fn canonical_core(
                 .into_iter()
                 .chain(crate::forms::repair::factor_drops(&cur.0, inner, &red_lim));
             for c in cands {
-                if crate::out_of_time() {
+                if crate::out_of_budget() {
                     break 'noisy;
                 }
                 let Some(f) = fit(&c) else { continue };
@@ -163,6 +179,10 @@ fn canonical_core(
     }
     let exact = cur.1.is_exact(&cfg);
     Some((cur.0, cur.1, exact, xf))
+}
+
+fn inner_unchanged(a: &crate::forms::fit::FitResult, b: &crate::forms::fit::FitResult) -> bool {
+    a.fitted.inner == b.fitted.inner
 }
 
 pub(crate) fn structural_constant(v: f64) -> bool {
@@ -183,7 +203,8 @@ pub(crate) fn structural_constant(v: f64) -> bool {
 }
 
 pub(crate) fn free_constants(model: &str) -> Option<usize> {
-    let (_, f) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let (_, f) =
+        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     let free = |v: &f64| !structural_constant(*v);
     Some(
         f.coef.iter().filter(|v| free(v)).count()
@@ -193,7 +214,8 @@ pub(crate) fn free_constants(model: &str) -> Option<usize> {
 }
 
 pub(crate) fn all_constants(model: &str) -> Option<usize> {
-    let (_, f) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let (_, f) =
+        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     Some(
         f.coef.iter().filter(|v| **v != 1.0).count() + usize::from(f.offset != 0.0) + f.inner.len(),
     )
@@ -206,7 +228,8 @@ pub(crate) fn loo_refit_predictions(
     n_cols: usize,
     n: usize,
 ) -> Option<Vec<Option<f64>>> {
-    let (e, f0) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let (e, f0) =
+        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     let cfg = crate::forms::fit::FitConfig::default();
     let cols: Vec<Vec<f64>> = features[..n_cols].iter().map(|c| c[..n].to_vec()).collect();
     Some(
@@ -238,7 +261,8 @@ pub(crate) fn loo_refit_r2(
     n_cols: usize,
     n: usize,
 ) -> Option<f64> {
-    let (e, f0) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let (e, f0) =
+        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     let cfg = crate::forms::fit::FitConfig::default();
     let cols: Vec<Vec<f64>> = features[..n_cols].iter().map(|c| c[..n].to_vec()).collect();
     let mut press = 0.0f64;
@@ -273,8 +297,32 @@ pub(crate) fn loo_refit_r2(
     (sst > 0.0).then(|| 1.0 - press / sst)
 }
 
+const TAMED_SCALE: f64 = 1.2345678901;
+
+fn tame_scales(a: crate::forms::ast::Ast) -> crate::forms::ast::Ast {
+    use crate::forms::ast::Ast;
+    fn factor(a: Ast) -> Ast {
+        match a {
+            Ast::Num(v) if v != 0.0 && v.is_finite() && (v.abs() < 1e-6 || v.abs() > 1e6) => {
+                Ast::Num(TAMED_SCALE.copysign(v))
+            }
+            Ast::Mul(x, y) => Ast::Mul(Box::new(factor(*x)), Box::new(factor(*y))),
+            Ast::Div(x, y) => Ast::Div(Box::new(factor(*x)), y),
+            Ast::Neg(x) => Ast::Neg(Box::new(factor(*x))),
+            other => other,
+        }
+    }
+    match a {
+        Ast::Add(x, y) => Ast::Add(Box::new(tame_scales(*x)), Box::new(tame_scales(*y))),
+        Ast::Sub(x, y) => Ast::Sub(Box::new(tame_scales(*x)), Box::new(tame_scales(*y))),
+        Ast::Neg(x) => Ast::Neg(Box::new(tame_scales(*x))),
+        other => factor(other),
+    }
+}
+
 pub(crate) fn loo_rows_needed(model: &str) -> Option<usize> {
-    let (_, f) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let (_, f) =
+        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     Some(crate::config::fit_min_rows(f.coef.len() + 1 + f.inner.len()) + 1)
 }
 

@@ -437,6 +437,16 @@ pub(crate) const SATURATION_REL: f64 = 0.02;
 /// part within a budget.
 pub(crate) const WIDE_COLUMNS: usize = 20;
 
+/// Feature columns the search uses at most: a wider table is searched on the
+/// SCREEN_COLUMNS columns most related to the target one at a time
+/// (driver::screen_columns). The search's first step (one-column and pair
+/// divisions, each scored against every column) grows with the cube of the
+/// columns; measured on 50- and 200-row tables, it completes in 7 s at 30
+/// columns (within the search's 8 s of a 10 s budget) and not within 8 s at
+/// 45, where no law was found, and at 10,000 columns it took 17 GB before
+/// its first division was scored.
+pub(crate) const SCREEN_COLUMNS: usize = 30;
+
 /// Approximate answers are ranked on relative residuals when the target has
 /// one sign and spans at least this factor (guard::relative_dl): there r² is
 /// set by the largest values. Lower than REL_SPAN, which decides exactness,

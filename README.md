@@ -178,6 +178,7 @@ Useful flags:
 ./keplearn --target Tc --timeout 10000 < superconductors.csv   # 10 s budget (default 60 s; 0 is unbounded)
 ./keplearn --top-k 3 < data.tsv                                # the 3 best answers
 ./keplearn --target y --sample 1000 < big.tsv                  # search on more rows
+./keplearn --max-memory 8192 < wide.tsv                        # 8 GiB heap limit (default 4 GiB; 0 is unbounded)
 ./keplearn --verbose < data.tsv                                # progress lines on stderr
 ./keplearn --help                                              # every flag and output field
 ```
@@ -211,7 +212,9 @@ shortest), then by description length; from 80 rows, by description
 length on the held-out rows.
 
 The `--timeout` budget is split: the search uses 80% of it and the
-answers are assembled in the rest.
+answers are assembled in the rest. The heap is bounded by `--max-memory`:
+past 75% of it the search stops and writes what it found. Above 30
+feature columns the search uses the 30 most related to the target.
 
 ## Benchmarks
 

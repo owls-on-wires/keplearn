@@ -146,6 +146,14 @@ impl Frontier {
         None
     }
 
+    pub(crate) fn pop_forced(&mut self) -> Option<Node> {
+        let i = self
+            .nodes
+            .iter()
+            .position(|n| n.as_ref().is_some_and(|n| !n.forced_finalist.is_empty()))?;
+        self.nodes[i].take()
+    }
+
     pub(crate) fn pop_structural(&mut self) -> Option<Node> {
         while let Some(std::cmp::Reverse(k)) = self.structural.pop() {
             if let Some(n) = self.nodes[k.idx].take() {

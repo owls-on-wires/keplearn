@@ -20,6 +20,10 @@ OPTIONS:
                           the answers are assembled in the rest; a budget
                           shorter than the first search step (up to about
                           a second on wide tables) ends after that step
+  --max-memory MB         heap limit in MiB (default: 4096; 0 is
+                          unbounded). The search stops at 75% of it and
+                          the answers found so far are written; reaching
+                          it ends the program with exit status 3
   --format json|summary   json (default) or a short report in the
                           table's column names
   --pretty                indent the JSON
@@ -41,7 +45,7 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
   results       up to --top-k answers; each has every field below
   verdict       the first answer's verdict (see VERDICTS)
   reason        why the verdict is not exact, or null
-  stopped_by    exact_exit | frontier_exhausted | timeout
+  stopped_by    exact_exit | frontier_exhausted | timeout | memory
   validation    holdout (80 rows or more: a quarter of the rows, at
                 most 2000, held out) or leave-one-out (fewer rows)
   noise_floor   the error the cells' written precision implies, as a
@@ -92,12 +96,16 @@ EXIT STATUS:
   1    the input could not be used (no data, no target column, not a
        table, over 1 GiB) or the output could not be written
   2    invalid command line, or stdin is a terminal
+  3    the memory limit (--max-memory) was reached before a result
+       could be written
   101  internal error (please report it)
 
 NOTES:
   * Diagnostics and warnings go to stderr; stdout holds only the result.
   * With many columns, run subsets of 2-5 at a time: irrelevant columns
     drop out of the answer, but the search slows as they accumulate.
+    Above 30 feature columns the search uses the 30 most related to the
+    target one at a time.
   * Output is deterministic; --seed has no effect.
   * A table needs 5 rows to be searched; with 5 only a law with no
     fitted constant can be confirmed, one with a constant needs 6.
@@ -148,6 +156,7 @@ fn main() {
     let mut target_col = "target".to_string();
     let mut quick_n: usize = 50;
     let mut timeout_ms: u64 = 60_000;
+    let mut max_memory_mb: u64 = 4096;
     let mut max_evals: u64 = 0;
     let mut seed: u64 = 0x9E3779B97F4A7C15;
     let mut max_depth: Option<usize> = None;
@@ -179,6 +188,10 @@ fn main() {
             }
             "--timeout" => {
                 timeout_ms = parse_val(&args, i, "--timeout");
+                i += 2;
+            }
+            "--max-memory" => {
+                max_memory_mb = parse_val(&args, i, "--max-memory");
                 i += 2;
             }
             "--max-evals" => {
@@ -274,5 +287,6 @@ fn main() {
         input_warnings: Vec::new(),
         verbose,
         timing,
+        max_memory_mb,
     });
 }

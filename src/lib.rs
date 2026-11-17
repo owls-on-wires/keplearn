@@ -27,6 +27,12 @@ pub(crate) use frontier::*;
 mod budget;
 pub(crate) use budget::*;
 
+mod heap;
+pub use heap::EXIT_MEMORY;
+
+#[global_allocator]
+static HEAP: heap::Counting = heap::Counting;
+
 mod model;
 pub(crate) use model::*;
 

@@ -318,14 +318,18 @@ fn screen_tables(sub: &[Vec<f64>]) -> Option<ScreenTables> {
         }
     }
     let mut uf: Vec<Option<Factor>> = vec![None];
-    for nodes in (2..=PRODUCT_U_NODES).rev() {
+    let mut within: Option<std::sync::Arc<Vec<Factor>>> = None;
+    for nodes in 2..=PRODUCT_U_NODES {
         let Some(u) = unary_factors(d, nodes) else {
             continue;
         };
-        if mf.len() * (u.len() + 1) <= PRODUCT_BUDGET {
-            uf.extend(u.iter().cloned().map(Some));
+        if mf.len() * (u.len() + 1) > PRODUCT_BUDGET {
             break;
         }
+        within = Some(u);
+    }
+    if let Some(u) = within {
+        uf.extend(u.iter().cloned().map(Some));
     }
     let mut uv: Vec<Vec<f64>> = Vec::new();
     let mut ufk: Vec<Option<Factor>> = Vec::new();
@@ -420,7 +424,7 @@ fn product_screen(sub: &[Vec<f64>], ys: &[f64], have: &[Term]) -> Vec<Term> {
     let mut resid = ysr.clone();
     let mut step_best: Vec<Vec<f64>> = Vec::new();
     for _ in 0..PRODUCT_STEPS {
-        if crate::out_of_time() {
+        if crate::out_of_budget() {
             break;
         }
         let rm = resid.iter().sum::<f64>() / ns as f64;
@@ -745,7 +749,7 @@ pub fn basis_ext(
         if stage >= 1 && !products {
             break;
         }
-        if crate::out_of_time() {
+        if crate::out_of_budget() {
             return None;
         }
         let set = cached_tag(&ATOM_CACHE, (fp, stage), || stage_set(&sub, stage));

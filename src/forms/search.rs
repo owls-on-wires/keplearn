@@ -154,6 +154,20 @@ pub fn snap(
     y_ho: &[f64],
     tol: f64,
 ) {
+    snap_with(e, fr, x_fit, y_fit, x_ho, y_ho, tol, true)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub fn snap_with(
+    e: &Expr,
+    fr: &mut FitResult,
+    x_fit: &[Vec<f64>],
+    y_fit: &[f64],
+    x_ho: &[Vec<f64>],
+    y_ho: &[f64],
+    tol: f64,
+    inner: bool,
+) {
     let score = |f: &crate::forms::nf::Fitted| -> f64 {
         let t = crate::forms::nf::eval_terms(e, x_ho, &f.inner);
         let yhat: Vec<f64> = (0..y_ho.len())
@@ -165,7 +179,7 @@ pub fn snap(
     if !base.is_finite() {
         return;
     }
-    for k in 0..fr.fitted.inner.len() {
+    for k in 0..if inner { fr.fitted.inner.len() } else { 0 } {
         for cand in nice_near(fr.fitted.inner[k]) {
             let mut inner = fr.fitted.inner.clone();
             inner[k] = cand;

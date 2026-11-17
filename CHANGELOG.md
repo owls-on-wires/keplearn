@@ -1,5 +1,54 @@
 # Changelog
 
+## 1.2.2
+
+**Wide tables**
+
+- `--timeout` bounds the whole run, from reading the table: on 10,000
+  columns reading took 4 s outside the budget, and a check that a column
+  holds numbers read every row once per column.
+- Above 30 feature columns the search uses the 30 most related to the
+  target one at a time, with a warning naming them. The search's first
+  step grows with the cube of the columns: at 10,000 columns it took
+  17 GB without finishing, and from 45 columns a 10 s budget was spent
+  before any law was found. A two-column law among 45 to 400 columns is
+  now found within a 10 s budget.
+- The first step checks the deadline while ranking its children (a
+  30-column table took 17 s on a 10 s budget), and builds the product
+  library's unary terms from the smallest up instead of building the
+  largest and refusing it (4 s at 30 columns). A form the first step has
+  completed is kept when the budget runs out.
+
+**Memory**
+
+- `--max-memory MB` (default 4096; 0 is unbounded) bounds the heap. Past
+  75% of it the search stops and the answers found so far are written
+  (`stopped_by: memory`); an allocation past the limit ends the program
+  with exit status 3.
+
+**Verdicts**
+
+- A law with a constant of extreme magnitude is confirmed: `E =
+  6.626e-34*c/lambda` was "no law found" because the leave-one-out check
+  dropped the term below its tolerance. The check now scores every model
+  as written, which also changes the order of approximate answers on some
+  small tables.
+- A snapped constant may no longer cost an exact fit its per-row
+  precision: `1000*exp(-t/12.3)` was rounded to
+  `1000*exp(-0.08130075*t) - 0.0001`, approximate. When a snap does, the
+  argument constants keep their fitted values.
+- The reason's largest miss is written to two significant digits below
+  0.01% (`0.00091%`, not `0.00%`), and the summary writes
+  `r2 > 0.9999999999` for an answer short of exact whose r2 rounds to 1.
+
+**Documentation**
+
+- 1.2.1 said Kepler's power law leads on the NASA planet table. That
+  held only on one table and only while the first approximate answer
+  missed some planet by more than 5%; with this release's scoring a form
+  missing Mercury by 3% leads there and the power law is second. The
+  reference documents the column screen and the memory limit.
+
 ## 1.2.1
 
 - On a table of fewer than 80 rows whose target spans a factor of 100 or

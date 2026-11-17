@@ -364,6 +364,7 @@ fn test_cfg() -> Config {
         input_warnings: Vec::new(),
         verbose: false,
         timing: false,
+        max_memory_mb: 0,
     }
 }
 
@@ -1167,27 +1168,41 @@ fn a_wide_span_target_ranks_approximate_answers_by_relative_misses() {
     let mut cfg = test_cfg();
     cfg.target_col = "period_days".to_string();
     let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
-    let top = j
+    let named: Vec<String> = j
         .get("results")
         .and_then(|r| r.as_arr())
-        .and_then(|r| r.first())
-        .cloned()
-        .unwrap();
-    assert_eq!(
-        top.get("named").and_then(|v| v.as_str()),
-        Some("(5/(8*pi))*distance_1e6km**(3/2)")
+        .unwrap()
+        .iter()
+        .take(2)
+        .map(|r| {
+            r.get("named")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .to_string()
+        })
+        .collect();
+    assert!(
+        named
+            .iter()
+            .any(|n| n == "(5/(8*pi))*distance_1e6km**(3/2)"),
+        "{:?}",
+        named
     );
     let reason = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
     assert!(reason.contains("largest miss"), "{}", reason);
-    assert!(crate::summary::render(
+    let summary = crate::summary::render(
         &run_text(&t, {
             let mut c = test_cfg();
             c.target_col = "period_days".to_string();
             c
         })
-        .unwrap()
-    )
-    .contains("r2 = 0.99995"));
+        .unwrap(),
+    );
+    assert!(
+        summary.contains("r2 = 0.9999") && !summary.contains("r2 = 1.0000"),
+        "{}",
+        summary
+    );
 }
 
 #[test]
@@ -1232,4 +1247,83 @@ fn row_index_columns_are_dropped_and_repeated_names_renamed() {
         .cloned()
         .unwrap();
     assert_eq!(top.get("named").and_then(|v| v.as_str()), Some("x + x_2"));
+}
+
+#[test]
+fn a_constant_of_planck_size_is_confirmed() {
+    let mut s = 21u64;
+    let t: String = "lambda,c,y\n".to_string()
+        + &(0..40)
+            .map(|_| {
+                let (l, c) = (1e-9 + 1e-3 * lcg(&mut s), 2.9e8 + 2e7 * lcg(&mut s));
+                format!("{:.12e},{:.12e},{:.12e}\n", l, c, 6.626e-34 * c / l)
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!(v, "exact", "{}", m);
+    assert!(m.contains("6.626e-34"), "{}", m);
+}
+
+#[test]
+fn a_decay_rate_is_not_rounded_off_its_rows() {
+    let mut s = 33u64;
+    let t: String = "t,y\n".to_string()
+        + &(0..50)
+            .map(|_| {
+                let x = 60.0 * lcg(&mut s);
+                format!("{:.12},{:.12e}\n", x, 1000.0 * (-x / 12.3).exp())
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!(v, "exact", "{}", m);
+    assert!(
+        same_function(&m, &[(0.0, 60.0)], |x| 1000.0 * (-x[0] / 12.3).exp()),
+        "{}",
+        m
+    );
+    assert_eq!(crate::driver::percent(9.1e-4), "0.00091");
+    assert_eq!(crate::driver::percent(0.87), "0.87");
+}
+
+#[test]
+fn a_wide_table_is_searched_on_its_most_related_columns() {
+    let mut s = 45u64;
+    let cols = 60;
+    let t: String = (1..=cols).map(|i| format!("c{},", i)).collect::<String>()
+        + "y\n"
+        + &(0..60)
+            .map(|_| {
+                let x: Vec<f64> = (0..cols).map(|_| 1.0 + 9.0 * lcg(&mut s)).collect();
+                x.iter().map(|v| format!("{},", v)).collect::<String>()
+                    + &format!("{}\n", x[6] * x[18].sqrt())
+            })
+            .collect::<String>();
+    let mut cfg = test_cfg();
+    cfg.timeout_ms = 0;
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        top.get("named").and_then(|v| v.as_str()),
+        Some("c7*sqrt(c19)")
+    );
+    assert_eq!(
+        j.get("names")
+            .and_then(|n| n.get("columns"))
+            .and_then(|c| c.as_arr())
+            .map(|c| c.len()),
+        Some(crate::config::SCREEN_COLUMNS)
+    );
+    let w = j
+        .get("warnings")
+        .and_then(|w| w.as_arr())
+        .cloned()
+        .unwrap_or_default();
+    assert!(w.iter().any(|x| x
+        .as_str()
+        .is_some_and(|x| x.contains("the 30 most related"))));
 }

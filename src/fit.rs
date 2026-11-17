@@ -135,7 +135,7 @@ pub(crate) fn build_probe_basis(inputs: &[&[f64]], qn: usize) -> Vec<Vec<f64>> {
         );
     }
     for i in 0..n {
-        if out_of_time() {
+        if out_of_budget() {
             return out;
         }
         for j in 0..n {

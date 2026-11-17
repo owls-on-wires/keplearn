@@ -40,22 +40,14 @@ thread_local! {
     std::cell::Cell::new(None) };
 }
 
-pub(crate) fn arm_deadline(timeout_ms: u64) {
-    let d = if timeout_ms > 0 {
-        Some(Instant::now() + std::time::Duration::from_millis(timeout_ms))
-    } else {
-        None
-    };
-    DEADLINE.with(|c| c.set(d));
-}
-
 pub(crate) fn arm_deadline_at(d: Option<Instant>) {
     DEADLINE.with(|c| c.set(d));
 }
 
 #[inline]
-pub(crate) fn out_of_time() -> bool {
-    DEADLINE
-        .with(|c| c.get())
-        .is_some_and(|d| Instant::now() >= d)
+pub(crate) fn out_of_budget() -> bool {
+    crate::heap::over_soft()
+        || DEADLINE
+            .with(|c| c.get())
+            .is_some_and(|d| Instant::now() >= d)
 }

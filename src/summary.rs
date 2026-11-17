@@ -42,9 +42,11 @@ pub fn render(json: &str) -> String {
     match results.first() {
         Some(top) if verdict != "no law found" => {
             let line = format!("{} = {}", target, law(top));
-            let r2 = f(top, "r2").map_or("undefined".to_string(), r2_text);
+            let r2 = f(top, "r2").map_or("= undefined".to_string(), |r| {
+                r2_text(r, verdict == "exact")
+            });
             out.push_str(&format!(
-                "{:<w$}  {} (r2 = {}, {})\n",
+                "{:<w$}  {} (r2 {}, {})\n",
                 line,
                 verdict,
                 r2,
@@ -77,10 +79,10 @@ pub fn render(json: &str) -> String {
             ));
             if let Some(top) = results.first().filter(|r| !s(r, "named").is_empty()) {
                 out.push_str(&format!(
-                    "best fit: {} = {} (r2 = {}; not confirmed)\n",
+                    "best fit: {} = {} (r2 {}; not confirmed)\n",
                     target,
                     law(top),
-                    r2_text(f(top, "r2").unwrap_or(-1.0))
+                    r2_text(f(top, "r2").unwrap_or(-1.0), false)
                 ));
             }
             if !s(&j, "reason").is_empty() {
@@ -126,12 +128,15 @@ pub fn render(json: &str) -> String {
     out
 }
 
-fn r2_text(r: f64) -> String {
+fn r2_text(r: f64, exact: bool) -> String {
+    if !exact && r >= 1.0 {
+        return "> 0.9999999999".to_string();
+    }
     let mut d = 4;
     while d < 12 && r < 1.0 && format!("{:.*}", d, r).starts_with("1.") {
         d += 2;
     }
-    format!("{:.*}", d, r)
+    format!("= {:.*}", d, r)
 }
 
 fn plural(n: usize, w: &str) -> String {

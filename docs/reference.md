@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.2.1, result schema `keplearn.result.v2`.
+Version 1.2.2, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -12,6 +12,7 @@ form of the same material.
 - [Verdicts](#verdicts)
 - [How answers are ordered](#how-answers-are-ordered)
 - [Time budget](#time-budget)
+- [Memory limit](#memory-limit)
 - [Messages, exit status and determinism](#messages-exit-status-and-determinism)
 - [Limits](#limits)
 
@@ -42,6 +43,15 @@ is a literal quote. Blank lines are ignored.
 - More than 20 feature columns get a warning: the search's first step
   grows with the pairs of columns, and a wide table is searched only in
   part within a budget.
+- Above 30 feature columns the search uses the 30 most related to the
+  target one at a time: the largest squared correlation of x, ln|x| or
+  1/x with y or ln|y| (ties to the earlier column). The others are left
+  out of the search and of `names.columns`, and a warning lists the 30
+  kept. The first step's work grows with the cube of the columns: it
+  completes in about 7 s at 30 columns and not within 8 s at 45, and at
+  10,000 columns it took 17 GB before reaching its first division. A law
+  whose columns are each unrelated to the target (a difference of two
+  large columns) can be screened out; search such columns as a subset.
 - A column with values beyond 1e150 gets a warning: their squares
   overflow, and laws over them may not be found. Rescale such a column.
 - A duplicated column name produces a warning; later feature columns
@@ -121,6 +131,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--target NAME` | `target` | the column to explain |
 | `--top-k N` | 10 | the most answers to return (at least 1) |
 | `--timeout MS` | 60000 | the time budget in milliseconds; 0 is unbounded (see [time budget](#time-budget)) |
+| `--max-memory MB` | 4096 | the heap limit in MiB; 0 is unbounded (see [memory limit](#memory-limit)) |
 | `--format json\|summary` | `json` | the JSON result, or a short report in the table's column names |
 | `--pretty` | off | indent the JSON (with `--format summary` it has no effect, and a warning says so) |
 | `-o FILE`, `--out FILE` | stdout | write the result to FILE |
@@ -133,7 +144,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.1`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.2`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -153,12 +164,12 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `results` | array | the answers, best first (see [ordering](#how-answers-are-ordered)), at most `--top-k` |
 | `verdict` | string | the first answer's verdict: `exact`, `approximate` or `no law found` |
 | `reason` | string or null | why the verdict is not `exact`; null when it is |
-| `stopped_by` | string | `exact_exit` (an exact answer ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) |
+| `stopped_by` | string | `exact_exit` (an exact answer ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) or `memory` (the heap reached 75% of `--max-memory`) |
 | `validation` | string | `holdout` (80 rows or more) or `leave-one-out` (fewer); see [scoring](#scoring) |
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
 | `rows` | integer | data rows read (after skipped rows) |
-| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded; a rounding floor not estimated) |
+| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, the columns kept above 30, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded; a rounding floor not estimated) |
 | `time_ms` | integer | elapsed milliseconds; present only with `--timing` |
 
 `results` is empty only for a table too small to search (fewer than 5
@@ -203,12 +214,14 @@ next best: force = (2*sqrt(3)/3)*m1*m2**(3/4)*sqrt(arctan(m2))/r**2    approxima
 
 - line 1: the first answer in the column names, its verdict, `r2`, rows
   (`r2` to 4 decimals, or to as many as show it is below 1 on an answer
-  that is not exact: `0.999956`, never `1.0000`);
+  that is not exact: `0.999956`, never `1.0000`; `r2 > 0.9999999999`
+  when it is within 1e-10 of 1);
 - `constants`: the free constants, and whether snapped constants were
   written by name;
 - `why not exact`: the `reason`, when the verdict is `approximate`; it
-  ends with the answer's largest miss as a percentage of the target, and
-  the target value where it happens;
+  ends with the answer's largest miss as a percentage of the target (to
+  two decimals, or two significant digits below 0.01%), and the target
+  value where it happens;
 - `data`: rows, columns, and the rounding floor (or `full precision`);
 - `next best`: the second answer and its verdict, when there is one;
 - `note`: each warning.
@@ -430,7 +443,8 @@ answer can have the higher `r2`:
 
 ## Time budget
 
-`--timeout MS` (default 60000) bounds the whole run, not just the search:
+`--timeout MS` (default 60000) bounds the whole run, from reading the
+table to writing the result, not just the search:
 
 - the search stops at 80% of the budget;
 - the remaining 20% assembles the answers: the rounding floor, the
@@ -440,11 +454,29 @@ answer can have the higher `r2`:
 
 The first search step (the root of the search) always completes, but it
 checks the deadline inside its larger parts (the term library, the
-product screen, the children over column pairs), so even on a wide table
-the run ends close to the budget. Below about a second the budget is not
-honoured exactly: the first step's fixed work takes that long on a wide
-table. With `--timeout 0` the search runs until it
-finishes.
+product screen, the children over column pairs, the ranking of those
+children), so even on a wide table the run ends close to the budget.
+Forms a step has already completed (the root's sum of library terms) are
+still collected once the budget is spent. Below about a second the budget
+is not honoured exactly: the first step's fixed work takes that long on a
+wide table. With `--timeout 0` the search runs until it finishes.
+
+## Memory limit
+
+`--max-memory MB` (default 4096; 0 is unbounded) bounds the heap the
+program holds, counted at every allocation:
+
+- past 75% of the limit the search stops as it does when the time budget
+  runs out (`stopped_by: memory`), and the answers found so far are
+  assembled and written;
+- an allocation that would pass the limit ends the program with exit
+  status 3 and a message on stderr, and nothing on stdout.
+
+The count is of the bytes the program asks for; the process's resident
+memory runs somewhat above it (the allocator's own overhead). Most tables
+stay in tens of megabytes. The sum-of-terms step holds up to two sets of
+4,000 prepared library terms, about 128 MB each, on tables of many
+columns, so 30-column tables reach about 200 MB.
 
 An exact answer ends the search early (`stopped_by: exact_exit`) when its
 canonical form is exact, reduced, holds on the rows at the edges of the
@@ -465,6 +497,7 @@ timings print as well. Nothing else is written to stderr except errors.
 | 0 | a result was written, whatever its verdict |
 | 1 | the input could not be used, or the output could not be written |
 | 2 | invalid command line, or stdin is a terminal |
+| 3 | the memory limit (`--max-memory`) was reached before a result could be written |
 | 101 | an internal error; the message asks for a report |
 
 **Determinism.** The same input and options give the same output, byte
@@ -476,6 +509,9 @@ and `--seed` has no effect. Two things break this:
   depends on the machine's speed, and so can the answer. Pass
   `--timeout 0` for answers that do not depend on speed.
 
+A stop at the memory limit does not depend on speed: the same input and
+options stop at the same point.
+
 ## Limits
 
 - **Search space.** Answers are built from the target by chains of up to
@@ -484,14 +520,12 @@ and `--seed` has no effect. Two things break this:
   ratio of two such sums. A law outside that space is not found. Its best
   approximation is reported as `approximate` or `no law found`.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
-  of the answer, but every column widens the search: twenty columns take
-  seconds and about 200 MB even for an easy law, and from about 40
-  columns a 10-second budget is spent in the first step without finding
-  a two-column law. The product library uses products of up to three
-  columns up to 21 columns and of two beyond. Memory grows with how long
-  the search runs: a 40-column table stays in tens of megabytes on a
-  10-second budget, but reached about 550 MB finding its law in 40 s at
-  the default budget.
+  of the answer, but every column widens the search: thirty columns take
+  about 7 s and 200 MB even for an easy law. Above 30 columns the search
+  uses the 30 most related to the target (see [input](#input)); a
+  two-column law among 45 to 400 columns of 50 or 200 rows was found
+  within a 10-second budget in under 200 MB. The product library uses
+  products of up to three columns up to 21 columns and of two beyond.
 - **Rows.** A table needs 5 rows to be searched; a law with k constants
   needs at least k + 3 rows to be exact. Five rows suffice for a law with
   no constant, six for a power law with one. Below 80
