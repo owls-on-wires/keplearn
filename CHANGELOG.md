@@ -1,5 +1,14 @@
 # Changelog
 
+## 1.2.3
+
+- Constants snap to the simple value that takes the fewest digits to
+  write (a named constant counting one), the nearest among equals. A
+  pendulum rounded to two significant digits fitted 6.285 and was
+  reported exact as `19/3*sqrt(L/g)`: thirds of one-digit decimals were
+  tried before multiples of pi, and the rounding floor admitted 19/3. It
+  is now `2*pi*sqrt(L/g)`, which fits the rows better.
+
 ## 1.2.2
 
 **Wide tables**

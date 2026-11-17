@@ -1327,3 +1327,45 @@ fn a_wide_table_is_searched_on_its_most_related_columns() {
         .as_str()
         .is_some_and(|x| x.contains("the 30 most related"))));
 }
+
+#[test]
+fn a_named_constant_is_tried_before_a_longer_fraction() {
+    let order = crate::forms::search::nice_near(6.285);
+    let at = |x: f64| order.iter().position(|v| (v - x).abs() < 1e-12).unwrap();
+    assert!(
+        at(2.0 * std::f64::consts::PI) < at(19.0 / 3.0),
+        "{:?}",
+        &order[..12]
+    );
+    let mut s = 61u64;
+    let sig2 = |v: f64| format!("{:.1e}", v).parse::<f64>().unwrap();
+    let t: String = "L,g,T\n".to_string()
+        + &(0..60)
+            .map(|_| {
+                let (l, g) = (0.1 + 2.9 * lcg(&mut s), 1.5 + 23.5 * lcg(&mut s));
+                format!(
+                    "{},{},{}\n",
+                    sig2(l),
+                    sig2(g),
+                    sig2(2.0 * std::f64::consts::PI * (l / g).sqrt())
+                )
+            })
+            .collect::<String>();
+    let mut cfg = test_cfg();
+    cfg.target_col = "T".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert!(
+        top.get("symbolic")
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .contains("2*pi"),
+        "{:?}",
+        top.get("model")
+    );
+}

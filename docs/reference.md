@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.2.2, result schema `keplearn.result.v2`.
+Version 1.2.3, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -144,7 +144,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.2`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.3`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -400,10 +400,13 @@ difference:
   whichever is larger;
 - otherwise, within one standard error of the fitted value.
 
-Snap targets, tried shortest first: zero; decimals of one to six
-significant digits and their halves, thirds and quarters; and the
-multiples of π, e, √2, √3 and their powers listed under
-[free constants](#free-constants). Being snapped does not make a
+Snap targets: zero; decimals of one to six significant digits and their
+halves, thirds and quarters; and the multiples of π, e, √2, √3 and their
+powers listed under [free constants](#free-constants). They are tried in
+order of the digits it takes to write them (the numerator's significant
+digits, the denominator's when it is not 1, and one for a named
+constant), and among equals the nearest first: a fitted 6.285 tries
+`2*pi` (one digit and a name) before `19/3` (two digits over one). Being snapped does not make a
 constant structural: a snapped 115 is still a free constant.
 
 ## How answers are ordered

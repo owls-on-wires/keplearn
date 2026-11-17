@@ -122,7 +122,7 @@ P_kPa = 8.3*T_K/V_L                               approximate (r2 = 0.9992, 441 
 constants: 1 free
 why not exact: the best fit leaves residuals above the precision the cells are written to; its largest miss is 3.55% of the target's value (where the target is 132.01)
 data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
-next best: P_kPa = 13.079*T_K - 8.32666666667*T_K*arctan(V_L)    approximate
+next best: P_kPa = 13.079*T_K - 8.327*T_K*arctan(V_L)    approximate
 ```
 
 The default output is one JSON object (schema `keplearn.result.v2`), the

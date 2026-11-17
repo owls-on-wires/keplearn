@@ -7,7 +7,18 @@ pub const SNAP_TOL: f64 = 1e-13;
 pub const DEGENERATE_REL: f64 = 3e-2;
 
 pub(crate) fn nice_near(v: f64) -> Vec<f64> {
-    let mut out: Vec<(usize, usize, f64, f64)> = vec![(0, 1, 0.0, 0.0)];
+    fn digits(k: f64) -> usize {
+        let mut k = k.abs().round() as u64;
+        if k == 0 {
+            return 1;
+        }
+        while k % 10 == 0 {
+            k /= 10;
+        }
+        k.to_string().len()
+    }
+    let den_cost = |den: usize| if den > 1 { digits(den as f64) } else { 0 };
+    let mut out: Vec<(usize, f64, f64)> = vec![(0, 0.0, 0.0)];
     if v == 0.0 || !v.is_finite() {
         return vec![0.0];
     }
@@ -18,7 +29,7 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             let k = (v / p * den as f64).round();
             let cand = k / den as f64 * p;
             if cand != 0.0 {
-                out.push((sig, den, (cand - v).abs(), cand));
+                out.push((digits(k) + den_cost(den), (cand - v).abs(), cand));
             }
         }
     }
@@ -33,8 +44,7 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
                         .any(|&(p, q)| p == num.abs() && q == den);
                 if num != 0.0 && num.abs() <= crate::forms::nf::SNAP_MULT_MAX && admitted {
                     out.push((
-                        2,
-                        den,
+                        digits(num) + den_cost(den) + 1,
                         (num / den as f64 * b - v).abs(),
                         num / den as f64 * b,
                     ));
@@ -42,9 +52,9 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             }
         }
     }
-    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.cmp(&b.1)).then(a.2.total_cmp(&b.2)));
+    out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
     let mut vals: Vec<f64> = Vec::new();
-    for (_, _, _, c) in out {
+    for (_, _, c) in out {
         if !vals.iter().any(|x| *x == c) {
             vals.push(c);
         }
