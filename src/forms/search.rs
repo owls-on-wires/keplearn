@@ -7,6 +7,49 @@ pub const SNAP_TOL: f64 = 1e-13;
 pub const DEGENERATE_REL: f64 = 3e-2;
 
 pub(crate) fn nice_near(v: f64) -> Vec<f64> {
+    let mut vals: Vec<f64> = Vec::new();
+    for (_, c) in nice_near_costed(v) {
+        if !vals.iter().any(|x| *x == c) {
+            vals.push(c);
+        }
+    }
+    #[cfg(test)]
+    if REVERSED_ORDER.with(|r| r.get()) {
+        vals.reverse();
+    }
+    vals
+}
+
+pub(crate) fn written_cost(v: f64) -> usize {
+    if !v.is_finite() {
+        return UNWRITTEN_COST;
+    }
+    thread_local! {
+        static COSTS : std::cell::RefCell < std::collections::HashMap < u64, usize >> =
+        std::cell::RefCell::new(std::collections::HashMap::new());
+    }
+    if let Some(k) = COSTS.with(|c| c.borrow().get(&v.to_bits()).copied()) {
+        return k;
+    }
+    let k = nice_near_costed(v)
+        .into_iter()
+        .filter(|(_, c)| (c - v).abs() <= 1e-12 * v.abs().max(1e-300))
+        .map(|(k, _)| k)
+        .min()
+        .unwrap_or(UNWRITTEN_COST);
+    COSTS.with(|c| {
+        let mut c = c.borrow_mut();
+        if c.len() > 1 << 16 {
+            c.clear();
+        }
+        c.insert(v.to_bits(), k);
+    });
+    k
+}
+
+pub(crate) const UNWRITTEN_COST: usize = 13;
+
+fn nice_near_costed(v: f64) -> Vec<(usize, f64)> {
     fn digits(k: f64) -> usize {
         let mut k = k.abs().round() as u64;
         if k == 0 {
@@ -20,7 +63,7 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
     let den_cost = |den: usize| if den > 1 { digits(den as f64) } else { 0 };
     let mut out: Vec<(usize, f64, f64)> = vec![(0, 0.0, 0.0)];
     if v == 0.0 || !v.is_finite() {
-        return vec![0.0];
+        return vec![(0, 0.0)];
     }
     let mag = v.abs().log10().floor();
     for sig in 1..=6usize {
@@ -53,17 +96,7 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
         }
     }
     out.sort_by(|a, b| a.0.cmp(&b.0).then(a.1.total_cmp(&b.1)));
-    let mut vals: Vec<f64> = Vec::new();
-    for (_, _, c) in out {
-        if !vals.iter().any(|x| *x == c) {
-            vals.push(c);
-        }
-    }
-    #[cfg(test)]
-    if REVERSED_ORDER.with(|r| r.get()) {
-        vals.reverse();
-    }
-    vals
+    out.into_iter().map(|(k, _, c)| (k, c)).collect()
 }
 
 #[cfg(test)]

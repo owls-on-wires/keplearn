@@ -1,5 +1,27 @@
 # Changelog
 
+## 1.3.1
+
+- A snapped named or fractional constant counts as structural only when
+  the data single it out: when another value that takes no more digits
+  to write fits as well (within half a nat, before the credit for being
+  structural), the constant stays a decimal and is free. Planets typed
+  to two significant digits gave `(5/(8*pi))*a**(3/2)` with no free
+  constant; they now give `0.2*a**(3/2)`, and the NASA table gives
+  `0.199*a**(3/2)` with one free constant. A gravity law at 5% noise gave
+  `(7/(4*sqrt(3)))*m1*m2/r**2`; it is now `1.01*m1*m2/r**2`. The same
+  holds for a named constant a law does not contain: at 1% noise, a
+  harmonic-number table is `0.29/n + 0.577*log(n)`, not
+  `(euler_gamma/2)/n + euler_gamma*log(n)`.
+- Held-out scoring leaves out exactly the 2% of rows with the largest
+  targets (ties in row order). It cut at a value, so on a 0/1 target every
+  1 was dropped and nothing could be scored ("no law found"). A step
+  function now gets a fitted line, approximate at r2 0.74.
+- The message for an abstention says why: no candidate predicted the rows
+  it was checked on better than their mean, or could be evaluated on
+  enough of them.
+- README: the `--pretty` example is the program's output as printed.
+
 ## 1.3.0
 
 The output schema is unchanged (`keplearn.result.v2`).

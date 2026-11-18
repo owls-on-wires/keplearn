@@ -1181,13 +1181,7 @@ fn a_wide_span_target_ranks_approximate_answers_by_relative_misses() {
                 .to_string()
         })
         .collect();
-    assert!(
-        named
-            .iter()
-            .any(|n| n == "(5/(8*pi))*distance_1e6km**(3/2)"),
-        "{:?}",
-        named
-    );
+    assert_eq!(named[0], "0.199*distance_1e6km**(3/2)", "{:?}", named);
     let reason = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
     assert!(reason.contains("largest miss"), "{}", reason);
     let summary = crate::summary::render(
@@ -1416,5 +1410,51 @@ fn rows_short_of_the_header_are_named_as_such() {
         e.contains("no data row has the header's 3 fields (most rows have 2)"),
         "{}",
         e
+    );
+}
+
+#[test]
+fn a_named_constant_needs_the_data_to_single_it_out() {
+    let t = "planet,a_1e6km,T_days\nMercury,58,88\nVenus,110,220\nEarth,150,370\nMars,230,690\nJupiter,780,4300\nSaturn,1400,11000\nUranus,2900,31000\nNeptune,4500,60000\n";
+    let mut cfg = test_cfg();
+    cfg.target_col = "T_days".to_string();
+    let j = crate::forms::json::parse(&run_text(t, cfg).unwrap()).unwrap();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    let named = top
+        .get("named")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    assert_eq!(named, "0.2*a_1e6km**(3/2)");
+}
+
+#[test]
+fn a_target_of_tied_values_keeps_its_held_out_rows() {
+    let mut s = 5u64;
+    let t: String = "x,y\n".to_string()
+        + &(0..80)
+            .map(|_| {
+                let x = lcg(&mut s);
+                format!("{},{}\n", x, if x > 0.5 { 1 } else { 0 })
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert!(
+        top.get("holdout_r2")
+            .and_then(|v| v.as_f64())
+            .is_some_and(|r| r > 0.5),
+        "{:?}",
+        top.get("holdout_r2")
     );
 }

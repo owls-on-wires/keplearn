@@ -826,13 +826,15 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         let m = mags.len();
         if m >= OUTLIER_TRIM_MIN_M {
             let k = (m / OUTLIER_TRIM_DEN).max(OUTLIER_TRIM_MIN);
-            let cut_idx = m - k;
-            mags.select_nth_unstable_by(cut_idx, |a, b| a.total_cmp(b));
-            let cutoff = mags[cut_idx];
-            for (j, i) in (h_lo..h_hi).enumerate() {
-                if keep[j] && target[i].abs() >= cutoff {
-                    keep[j] = false;
-                }
+            let mut by_mag: Vec<usize> = (0..hold_n).filter(|&j| keep[j]).collect();
+            by_mag.sort_by(|&a, &b| {
+                target[h_lo + b]
+                    .abs()
+                    .total_cmp(&target[h_lo + a].abs())
+                    .then(a.cmp(&b))
+            });
+            for &j in by_mag.iter().take(k) {
+                keep[j] = false;
             }
         }
         keep
@@ -1532,7 +1534,10 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         } else if finalists.is_empty() {
             "the search found no candidate form".to_string()
         } else {
-            format!("no candidate could be scored on {} rows", n_rows_in)
+            format!(
+                    "no candidate form predicted the rows it was checked on (of {}) better than their mean, or could be evaluated on enough of them",
+                    n_rows_in
+                )
         });
     } else {
         let identity_cols: Vec<usize> = (0..n_cols).collect();

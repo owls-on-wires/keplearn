@@ -830,11 +830,80 @@ pub(crate) fn snap_choice(
     if !min.is_finite() {
         return 0;
     }
-    let free = |k: usize| {
-        free_constants(&crate::forms::nf::print_answer(e, &opts[k])).unwrap_or(usize::MAX)
+    let free_memo: Vec<std::cell::Cell<Option<usize>>> =
+        vec![std::cell::Cell::new(None); opts.len()];
+    let free = |k: usize| -> usize {
+        free_memo[k].get().unwrap_or_else(|| {
+            let v =
+                free_constants(&crate::forms::nf::print_answer(e, &opts[k])).unwrap_or(usize::MAX);
+            free_memo[k].set(Some(v));
+            v
+        })
     };
-    (0..opts.len())
-        .filter(|&k| dls[k] <= min + DL_BAND)
+    let rows = (0..n.min(target.len()))
+        .filter(|&i| target[i].is_finite())
+        .count()
+        .min(DL_ROWS)
+        .max(2);
+    let half_ln = 0.5 * (rows as f64).ln();
+    let cost = |k: usize| -> usize {
+        let f = &opts[k];
+        f.coef
+            .iter()
+            .filter(|v| **v != 1.0)
+            .map(|v| crate::forms::search::written_cost(*v))
+            .sum::<usize>()
+            + if f.offset != 0.0 {
+                crate::forms::search::written_cost(f.offset)
+            } else {
+                0
+            }
+            + f.inner
+                .iter()
+                .map(|v| crate::forms::search::written_cost(*v))
+                .sum::<usize>()
+    };
+    let written_count = |k: usize| {
+        opts[k].coef.iter().filter(|v| **v != 1.0).count()
+            + usize::from(opts[k].offset != 0.0)
+            + opts[k].inner.len()
+    };
+    let data = |k: usize| {
+        if free(k) == usize::MAX {
+            f64::INFINITY
+        } else {
+            dls[k] + half_ln * (written_count(k) as f64 - free(k) as f64)
+        }
+    };
+    let credited = |k: usize| free(k) < written_count(k);
+    let same = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs());
+    let differs = |a: &crate::forms::nf::Fitted, b: &crate::forms::nf::Fitted| {
+        !same(a.offset, b.offset)
+            || a.coef.iter().zip(&b.coef).any(|(x, y)| !same(*x, *y))
+            || a.inner.iter().zip(&b.inner).any(|(x, y)| !same(*x, *y))
+    };
+    let singled_out = |k: usize| {
+        if k == 0 || !credited(k) {
+            return true;
+        }
+        let (dk, ck) = (data(k), cost(k));
+        !(0..opts.len()).any(|j| {
+            j != k
+                && dls[j] <= dk + DL_BAND
+                && differs(&opts[j], &opts[k])
+                && data(j) <= dk + DL_BAND
+                && cost(j) <= ck
+        })
+    };
+    let mut order: Vec<usize> = (0..opts.len()).filter(|&k| dls[k].is_finite()).collect();
+    order.sort_by(|&a, &b| dls[a].total_cmp(&dls[b]).then(a.cmp(&b)));
+    let Some(min) = order.iter().find(|&&k| singled_out(k)).map(|&k| dls[k]) else {
+        return 0;
+    };
+    order
+        .into_iter()
+        .take_while(|&k| dls[k] <= min + DL_BAND)
+        .filter(|&k| singled_out(k))
         .min_by_key(|&k| (free(k), usize::from(k == 0), k))
         .unwrap_or(0)
 }

@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.3.0, result schema `keplearn.result.v2`.
+Version 1.3.1, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -147,7 +147,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.0`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.1`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -308,7 +308,9 @@ of these applies to the first answer:
 - it has more constants than the rows can confirm (fewer than its
   constants + 3 rows);
 - it does not beat a constant by the margin above;
-- the search found no candidate, or none could be scored.
+- the search found no candidate, or none predicted the rows it was
+  checked on better than their mean (or could be evaluated on enough of
+  them).
 
 ### The rounding floor
 
@@ -388,8 +390,9 @@ offset of 0 are not constants.
 **80 rows or more.** A quarter of the rows, at most 2000, is held out
 (the same rows on every run). The search fits on the rest, and answers
 are scored on the held-out rows: R², leaving out the 2% of rows with the
-largest target magnitudes when there are 20 or more, and requiring the
-answer to be defined on nine tenths of them.
+largest target magnitudes when there are 20 or more (exactly that many,
+ties taken in row order, so a 0/1 target keeps its 1s), and requiring
+the answer to be defined on nine tenths of them.
 
 **Fewer than 80 rows.** No row is held out. Answers are scored by
 leave-one-out: for each row, every constant of the answer is refitted on
@@ -425,6 +428,18 @@ constant). A fitted 6.285 on a two-digit pendulum becomes `2*pi`, which
 is structural and fits the rows better, not `19/3`, which the rounding
 floor also admits. Being snapped does not make a constant structural: a
 snapped 115 is still a free constant.
+
+A named or fractional value counts as structural only when the data
+single it out. Naming one of k values that fit equally well costs about
+ln k nats, which the credit for a structural constant does not pay for.
+So a snapped value is withdrawn when another candidate that takes no
+more digits to write fits within half a nat of it, on the data alone
+(the criterion without that credit). The constant then stays a decimal
+and counts as free. Planets typed to two digits support 0.199 as well as
+`5/(8*pi)`, so the answer is written `0.199*a**(3/2)` (or the shorter
+0.2 where it fits), with the constant free. A fitted 1.0104 on 5% noise is
+written 1.01, not `7/(4*sqrt(3))`. A two-digit pendulum keeps `2*pi`
+because no value as short fits as well.
 
 Constants are first snapped one at a time. An answer short of exact then
 has its constants chosen together: each constant inside a function takes

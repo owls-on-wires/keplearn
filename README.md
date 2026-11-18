@@ -141,8 +141,16 @@ $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
       "holdout_r2": 0.9999999999941845,
       "scale": 1,
       "offset": 0,
-      "columns": [0, 1, 2],
-      "uses": ["m1", "m2", "r"],
+      "columns": [
+        0,
+        1,
+        2
+      ],
+      "uses": [
+        "m1",
+        "m2",
+        "r"
+      ],
       "factor": "direct",
       "structure": "c1*x1*x2/x3**2 + b",
       "canonical": "x1*x2/x3**2",
@@ -157,7 +165,14 @@ $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
   "stopped_by": "exact_exit",
   "validation": "leave-one-out",
   "noise_floor": 1.037230275256967e-6,
-  "names": {"target": "force", "columns": ["m1", "m2", "r"]},
+  "names": {
+    "target": "force",
+    "columns": [
+      "m1",
+      "m2",
+      "r"
+    ]
+  },
   "rows": 60,
   "warnings": []
 }
