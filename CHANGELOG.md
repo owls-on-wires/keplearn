@@ -1,5 +1,35 @@
 # Changelog
 
+## 1.3.2
+
+- When the target's cells are written to different places (a fixed number
+  of significant digits over a wide range), the canonical stage also fits
+  each answer with every row weighted by its spread: its cell's rounding
+  plus the noise the plain fit leaves, the same on every row. The
+  selection criterion keeps whichever fit it scores lower. A decay
+  `500*exp(-t/7.3)` written to three digits was approximate: the plain
+  fit is set by the large rows and missed the small ones beyond their
+  rounding. It is now exact (`500*exp(-0.1369801921*t)`). The weighted fit
+  is tried only while the places span at most a factor of 1e6 (the solve
+  squares that range); a target from 1e-25 to 1e13 keeps the plain fit.
+- The selection criterion's extra noise is the level at which the rows
+  cost least, searched, not the moment estimate. Where the residuals are
+  of the rounding's size the moment estimate could be 0 or below while a
+  few rows sat just past their cells, and each such row cost the most a
+  row can: a fit that landed all but two rows in their cells scored
+  worse than one that missed twelve.
+- A joint choice of constants also offers each scale rounded to fewer
+  significant digits. `E = 1239.84/λ` written to six digits gave
+  `1239.84186804/λ - 3e-6`, approximate with `stopped_by: exact_exit`:
+  one at a time the offset kept −3e-6, and the scale could then not
+  reach 1239.84. It is now `1239.84/λ`, exact.
+- An answer that lands every cell but fails a condition on its form says
+  which (a term negligible against its sum, terms that cancel, a function
+  whose argument barely varies, or one a constant could replace) instead
+  of blaming its residuals.
+- README: the two-digit planets example's second answer is the one this
+  release prints.
+
 ## 1.3.1
 
 - A snapped named or fractional constant counts as structural only when

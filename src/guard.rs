@@ -105,8 +105,78 @@ fn canonical_core(
             && within_rounding(&ans, features, target, train_n)
             && well_conditioned(&ans, features, train_n)
     };
+    let quanta: Option<Vec<f64>> = QUANTA.with(|q| {
+        let q = q.borrow();
+        let qf: Vec<f64> = fi
+            .iter()
+            .map(|&r| q.1.get(r).copied().unwrap_or(0.0))
+            .collect();
+        let (lo, hi) = qf.iter().fold((f64::INFINITY, 0.0f64), |(lo, hi), &v| {
+            (lo.min(v), hi.max(v))
+        });
+        (lo > 0.0 && lo.is_finite() && hi > lo && hi <= WEIGHT_RANGE_MAX * lo).then_some(qf)
+    });
+    let weights_for =
+        |e: &crate::forms::nf::Expr, fr: &crate::forms::fit::FitResult| -> Option<Vec<f64>> {
+            let qf = quanta.as_ref()?;
+            let t = crate::forms::nf::eval_terms(e, &xf, &fr.fitted.inner);
+            let rows: Vec<usize> = (0..yf.len())
+                .filter(|&r| yf[r].is_finite() && t.iter().all(|c| c[r].is_finite()))
+                .collect();
+            if rows.is_empty() {
+                return None;
+            }
+            let extra = rows
+                .iter()
+                .map(|&r| {
+                    (yf[r]
+                        - fr.fitted.offset
+                        - fr.fitted
+                            .coef
+                            .iter()
+                            .zip(&t)
+                            .map(|(c, g)| c * g[r])
+                            .sum::<f64>())
+                    .powi(2)
+                        - qf[r] * qf[r] / 12.0
+                })
+                .sum::<f64>()
+                / rows.len() as f64;
+            let extra = extra.max(0.0);
+            Some(
+                qf.iter()
+                    .map(|v| 1.0 / (v * v / 12.0 + extra).sqrt())
+                    .collect(),
+            )
+        };
+    let dl = |e: &crate::forms::nf::Expr, fr: &crate::forms::fit::FitResult| {
+        cached_dl(
+            &crate::forms::nf::print_answer(e, &fr.fitted),
+            features,
+            target,
+            train_n,
+        )
+    };
     let fit = |e: &crate::forms::nf::Expr| -> Option<crate::forms::fit::FitResult> {
         let mut fr = crate::forms::fit::fit_expr(e, &xf, &yf, &xh, &yh, &cfg)?;
+        if let Some(w) = weights_for(e, &fr) {
+            let w = &w;
+            if let Some(fw) = crate::forms::fit::weighted_fit(e, &xf, &yf, w, &fr.fitted.inner) {
+                let th = crate::forms::nf::eval_terms(e, &xh, &fw.inner);
+                let yhat: Vec<f64> = (0..yh.len())
+                    .map(|r| {
+                        fw.offset + fw.coef.iter().zip(&th).map(|(c, g)| c * g[r]).sum::<f64>()
+                    })
+                    .collect();
+                let alt = crate::forms::fit::FitResult {
+                    r2_holdout: crate::forms::fit::r2(&yh, &yhat),
+                    fitted: fw,
+                };
+                if dl(e, &alt) < dl(e, &fr) {
+                    fr = alt;
+                }
+            }
+        }
         let exact = fr.is_exact(&cfg);
         let tol = if exact {
             snap_tol
@@ -128,14 +198,6 @@ fn canonical_core(
             }
         }
         Some(fr)
-    };
-    let dl = |e: &crate::forms::nf::Expr, fr: &crate::forms::fit::FitResult| {
-        cached_dl(
-            &crate::forms::nf::print_answer(e, &fr.fitted),
-            features,
-            target,
-            train_n,
-        )
     };
     let fr0 = fit(&e0)?;
     let mut cur = (e0, fr0);
@@ -408,10 +470,18 @@ pub(crate) fn fits_each_row(model: &str, features: &[Vec<f64>], target: &[f64], 
 }
 
 pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> bool {
+    conditioning_fault(model, features, n).is_none()
+}
+
+pub(crate) fn conditioning_fault(
+    model: &str,
+    features: &[Vec<f64>],
+    n: usize,
+) -> Option<&'static str> {
     use crate::config::{COND_CANCEL_MAX, COND_NEGLIGIBLE};
     use crate::forms::ast::Ast;
     let Ok(ast) = crate::forms::ast::parse(model) else {
-        return true;
+        return None;
     };
     let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
     fn sums<'a>(a: &'a Ast, out: &mut Vec<(&'a Ast, &'a Ast, bool)>) {
@@ -436,7 +506,9 @@ pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> 
             &f.inner,
             crate::forms::search::DEGENERATE_REL,
         ) {
-            return false;
+            return Some(
+                "a function in it has an argument that barely varies over the rows, where it stands in for a simpler form",
+            );
         }
     }
     let mut pairs = Vec::new();
@@ -456,11 +528,14 @@ pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> 
             continue;
         }
         let negligible = COND_NEGLIGIBLE.max((1.0 - crate::config::EXACT_EXIT_R2).sqrt());
-        if sa.min(sb) < negligible * sv || sa + sb > COND_CANCEL_MAX * sv {
-            return false;
+        if sa.min(sb) < negligible * sv {
+            return Some("a term in it is negligible against its sum");
+        }
+        if sa + sb > COND_CANCEL_MAX * sv {
+            return Some("terms in it cancel to a small part of their size");
         }
     }
-    true
+    None
 }
 
 pub(crate) fn within_rounding(
@@ -741,9 +816,62 @@ pub(crate) fn description_length(
             .map(|&k| ((y[k] - p[k]).powi(2) - allowed(k)) / (p[k] * p[k]))
             .sum::<f64>()
             / nd;
-        for (s2, rel) in [(additive, false), (relative, true)] {
-            if s2 > 0.0 && s2.is_finite() && sd > 0.0 {
-                best = best.min(rows_cost(readings, s2, rel) + half_ln);
+        if sd > 0.0 {
+            let mean_allowed = defined.iter().map(|&k| allowed(k)).sum::<f64>() / nd;
+            for (s2m, rel) in [(additive, false), (relative, true)] {
+                let scale = if rel {
+                    defined
+                        .iter()
+                        .filter(|&&k| p[k] != 0.0)
+                        .map(|&k| allowed(k) / (p[k] * p[k]))
+                        .sum::<f64>()
+                        / nd
+                } else {
+                    mean_allowed
+                };
+                let top = if s2m.is_finite() {
+                    s2m.max(scale)
+                } else {
+                    scale
+                };
+                if !(top > 0.0 && top.is_finite()) {
+                    continue;
+                }
+                let cost = |ln_s2: f64| rows_cost(readings, ln_s2.exp(), rel);
+                let decade = std::f64::consts::LN_10;
+                let (mut at, mut lowest) = (top.ln(), f64::INFINITY);
+                if s2m > NOISE_GAUSSIAN * scale {
+                    lowest = cost(at);
+                } else {
+                    for j in 0..=NOISE_GRID_DECADES {
+                        let x = top.ln() - decade * j as f64;
+                        let c = cost(x);
+                        if c < lowest {
+                            lowest = c;
+                            at = x;
+                        }
+                    }
+                }
+                let (mut a, mut b) = (at - decade, at + decade);
+                let g = 0.5 * (5f64.sqrt() - 1.0);
+                let (mut x1, mut x2) = (b - g * (b - a), a + g * (b - a));
+                let (mut f1, mut f2) = (cost(x1), cost(x2));
+                for _ in 0..NOISE_GOLDEN_STEPS {
+                    if f1 < f2 {
+                        b = x2;
+                        x2 = x1;
+                        f2 = f1;
+                        x1 = b - g * (b - a);
+                        f1 = cost(x1);
+                    } else {
+                        a = x1;
+                        x1 = x2;
+                        f1 = f2;
+                        x2 = a + g * (b - a);
+                        f2 = cost(x2);
+                    }
+                }
+                best = best.min(lowest.min(f1).min(f2) + half_ln);
             }
         }
     }
@@ -770,6 +898,14 @@ pub(crate) fn cached_dl(model: &str, features: &[Vec<f64>], target: &[f64], n: u
 }
 
 const CELL_NLL_CAP: f64 = 700.0;
+
+const WEIGHT_RANGE_MAX: f64 = 1e6;
+
+const NOISE_GRID_DECADES: usize = 8;
+
+const NOISE_GOLDEN_STEPS: usize = 6;
+
+const NOISE_GAUSSIAN: f64 = 10.0;
 
 fn cell_nll(r: f64, q: f64, sigma: f64) -> f64 {
     const CAP: f64 = CELL_NLL_CAP;

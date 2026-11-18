@@ -654,3 +654,176 @@ pub fn linear_fit(g: &[Vec<f64>], y: &[f64]) -> Option<(Vec<f64>, f64)> {
         .collect();
     solve_linear(g, y, &rows)
 }
+
+fn weighted_ls(cols: &[Vec<f64>], y: &[f64], w: &[f64], rows: &[usize]) -> Option<(Vec<f64>, f64)> {
+    let k = cols.len() + 1;
+    let col = |j: usize, r: usize| if j < cols.len() { cols[j][r] } else { 1.0 };
+    let norms: Vec<f64> = (0..k)
+        .map(|j| {
+            rows.iter()
+                .map(|&r| (w[r] * col(j, r)).powi(2))
+                .sum::<f64>()
+                .sqrt()
+        })
+        .collect();
+    if norms.iter().any(|v| !(*v > 0.0 && v.is_finite())) {
+        return None;
+    }
+    let mut a = vec![0.0f64; k * (k + 1)];
+    for &r in rows {
+        let z: Vec<f64> = (0..k).map(|j| w[r] * col(j, r) / norms[j]).collect();
+        for i in 0..k {
+            for j in 0..k {
+                a[i * (k + 1) + j] += z[i] * z[j];
+            }
+            a[i * (k + 1) + k] += z[i] * w[r] * y[r];
+        }
+    }
+    let sol = solve_augmented(&mut a, k)?;
+    let mut c: Vec<f64> = (0..k).map(|j| sol[j] / norms[j]).collect();
+    let offset = c.pop()?;
+    Some((c, offset))
+}
+
+fn solve_augmented(a: &mut [f64], k: usize) -> Option<Vec<f64>> {
+    for col in 0..k {
+        let piv = (col..k).max_by(|&p, &q| {
+            a[p * (k + 1) + col]
+                .abs()
+                .total_cmp(&a[q * (k + 1) + col].abs())
+        })?;
+        if !(a[piv * (k + 1) + col].abs() > 1e-300) {
+            return None;
+        }
+        for c in 0..=k {
+            a.swap(col * (k + 1) + c, piv * (k + 1) + c);
+        }
+        for r in 0..k {
+            if r != col {
+                let f = a[r * (k + 1) + col] / a[col * (k + 1) + col];
+                for c in col..=k {
+                    a[r * (k + 1) + c] -= f * a[col * (k + 1) + c];
+                }
+            }
+        }
+    }
+    let x: Vec<f64> = (0..k)
+        .map(|i| a[i * (k + 1) + k] / a[i * (k + 1) + i])
+        .collect();
+    x.iter().all(|v| v.is_finite()).then_some(x)
+}
+
+pub fn weighted_fit(
+    e: &nf::Expr,
+    x_fit: &[Vec<f64>],
+    y_fit: &[f64],
+    w: &[f64],
+    inner0: &[f64],
+) -> Option<nf::Fitted> {
+    let n = y_fit.len();
+    let t0 = nf::eval_terms(e, x_fit, inner0);
+    let rows: Vec<usize> = (0..n)
+        .filter(|&r| {
+            y_fit[r].is_finite()
+                && w[r].is_finite()
+                && w[r] > 0.0
+                && t0.iter().all(|c| c[r].is_finite())
+        })
+        .collect();
+    if rows.len() < t0.len() + 1 + inner0.len() {
+        return None;
+    }
+    let at = |inner: &[f64]| -> Option<(Vec<f64>, nf::Fitted)> {
+        let t = nf::eval_terms(e, x_fit, inner);
+        if rows.iter().any(|&r| t.iter().any(|c| !c[r].is_finite())) {
+            return None;
+        }
+        let (coef, offset) = weighted_ls(&t, y_fit, w, &rows)?;
+        let res: Vec<f64> = rows
+            .iter()
+            .map(|&r| {
+                w[r] * (y_fit[r] - offset - coef.iter().zip(&t).map(|(c, g)| c * g[r]).sum::<f64>())
+            })
+            .collect();
+        res.iter().all(|v| v.is_finite()).then_some((
+            res,
+            nf::Fitted {
+                coef,
+                offset,
+                inner: inner.to_vec(),
+            },
+        ))
+    };
+    let ss = |r: &[f64]| r.iter().map(|v| v * v).sum::<f64>();
+    let (mut res, mut best) = at(inner0)?;
+    let k = inner0.len();
+    if k == 0 {
+        return Some(best);
+    }
+    let mut s = ss(&res);
+    let mut lambda = 1e-3;
+    for _ in 0..WEIGHTED_LM_ITERS {
+        let theta = best.inner.clone();
+        let mut jac: Vec<Vec<f64>> = Vec::with_capacity(k);
+        for j in 0..k {
+            let h = 1e-7 * theta[j].abs().max(1e-6);
+            let mut th = theta.clone();
+            th[j] += h;
+            let Some((rj, _)) = at(&th) else {
+                return Some(best);
+            };
+            jac.push(rj.iter().zip(&res).map(|(a, b)| (a - b) / h).collect());
+        }
+        let jtj: Vec<f64> = (0..k * k)
+            .map(|ij| {
+                jac[ij / k]
+                    .iter()
+                    .zip(&jac[ij % k])
+                    .map(|(a, b)| a * b)
+                    .sum()
+            })
+            .collect();
+        let jtr: Vec<f64> = (0..k)
+            .map(|i| jac[i].iter().zip(&res).map(|(a, b)| a * b).sum())
+            .collect();
+        let mut improved = false;
+        for _ in 0..8 {
+            let mut a = vec![0.0f64; k * (k + 1)];
+            for i in 0..k {
+                for j in 0..k {
+                    a[i * (k + 1) + j] = jtj[i * k + j]
+                        + if i == j {
+                            lambda * jtj[i * k + i].max(1e-300)
+                        } else {
+                            0.0
+                        };
+                }
+                a[i * (k + 1) + k] = -jtr[i];
+            }
+            let Some(d) = solve_augmented(&mut a, k) else {
+                lambda *= 10.0;
+                continue;
+            };
+            let th: Vec<f64> = theta.iter().zip(&d).map(|(a, b)| a + b).collect();
+            if let Some((r2, f2)) = at(&th) {
+                let s2 = ss(&r2);
+                if s2 < s {
+                    let rel = (s - s2) / s.max(1e-300);
+                    res = r2;
+                    best = f2;
+                    s = s2;
+                    lambda = (lambda / 10.0).max(1e-12);
+                    improved = rel > 1e-12;
+                    break;
+                }
+            }
+            lambda *= 10.0;
+        }
+        if !improved {
+            break;
+        }
+    }
+    Some(best)
+}
+
+const WEIGHTED_LM_ITERS: usize = 50;

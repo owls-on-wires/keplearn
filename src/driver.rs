@@ -1617,6 +1617,22 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             };
             let v = match verdict_of(score, d) {
                 "exact" if !law_shaped(&c.model) => {
+                    let fits = crate::guard::fits_each_row(&c.model, &features, &target, n_rows)
+                        && crate::guard::within_rounding(&c.model, &features, &target, n_rows);
+                    if fits {
+                        let fault = crate::guard::conditioning_fault(
+                                &c.model,
+                                &features,
+                                n_rows,
+                            )
+                            .unwrap_or(
+                                "a function in it is nearly constant over the rows, and a constant fits as well",
+                            );
+                        why = Some(format!(
+                            "the best fit is within the precision the cells are written to, but {}",
+                            fault
+                        ));
+                    }
                     if d.is_some_and(|d| d < -dl_margin) {
                         "approximate"
                     } else {

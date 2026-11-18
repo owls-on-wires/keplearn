@@ -1458,3 +1458,65 @@ fn a_target_of_tied_values_keeps_its_held_out_rows() {
         top.get("holdout_r2")
     );
 }
+
+fn sig_g(v: f64, sig: i32) -> String {
+    let d = (sig - 1 - v.abs().log10().floor() as i32).max(0) as usize;
+    let s = format!("{:.*}", d, v);
+    if s.contains('.') {
+        s.trim_end_matches('0').trim_end_matches('.').to_string()
+    } else {
+        s
+    }
+}
+
+#[test]
+fn a_decay_written_to_three_digits_is_exact() {
+    let t: String = "t,y\n".to_string()
+        + &(0..40)
+            .map(|t| format!("{},{}\n", t, sig_g(500.0 * (-(t as f64) / 7.3).exp(), 3)))
+            .collect::<String>();
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        top.get("verdict").and_then(|v| v.as_str()),
+        Some("exact"),
+        "{:?}",
+        top.get("model")
+    );
+    assert_eq!(
+        top.get("structure")
+            .and_then(|v| v.as_str())
+            .map(|s| s.contains("exp")),
+        Some(true),
+        "{:?}",
+        top.get("model")
+    );
+}
+
+#[test]
+fn an_offset_and_a_scale_are_snapped_together() {
+    let t: String = "lambda,y\n".to_string()
+        + &(0..41)
+            .map(|k| {
+                let l = 380.0 + 10.0 * k as f64;
+                format!("{},{}\n", l, sig_g(1239.84 / l, 6))
+            })
+            .collect::<String>();
+    let j = run_json(&t);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    assert_eq!(
+        top.get("model").and_then(|v| v.as_str()),
+        Some("1239.84*1/x1")
+    );
+    assert_eq!(top.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+}

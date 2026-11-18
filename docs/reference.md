@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.3.1, result schema `keplearn.result.v2`.
+Version 1.3.2, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -147,7 +147,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.1`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.2`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -221,10 +221,14 @@ next best: force = (2*sqrt(3)/3)*m1*m2**(3/4)*sqrt(arctan(m2))/r**2    approxima
   when it is within 1e-10 of 1);
 - `constants`: the free constants, and whether snapped constants were
   written by name;
-- `why not exact`: the `reason`, when the verdict is `approximate`; it
-  ends with the answer's largest miss as a percentage of the target (to
-  two decimals, or two significant digits below 0.01%), and the target
-  value where it happens;
+- `why not exact`: the `reason`, when the verdict is `approximate`. When
+  the answer misses some cell beyond its rounding, it ends with the
+  answer's largest miss as a percentage of the target (to two decimals,
+  or two significant digits below 0.01%), and the target value where it
+  happens. When the answer lands every cell but fails a condition on its
+  form (rule 4 under [exact](#exact)), it says which: a term negligible
+  against its sum, terms that cancel, a function whose argument barely
+  varies, or a function a constant could replace;
 - `data`: rows, columns, and the rounding floor (or `full precision`);
 - `next best`: the second answer and its verdict, when there is one;
 - `note`: each warning.
@@ -409,6 +413,18 @@ refitted scale and offset (the exact threshold is calibrated on it);
 every answer there carries its own fitted scale and offset.
 
 **Constants.** Each answer's constants are refitted on the training rows.
+The fit is least squares. When the target's cells are written to
+different places (three significant digits from 500 down to 2.74), the
+answer is also fitted with each row weighted by the inverse of its
+spread: its cell's rounding (q²/12) plus the noise the plain fit leaves
+beyond the rounding, the same on every row. The
+[selection criterion](#the-selection-criterion) keeps whichever of the
+two fits it scores lower. The plain fit is set by the largest values: on
+a decay written to three digits it missed the small rows beyond their
+rounding, and the answer was approximate; the weighted fit lands every
+row in its cell. Where the noise is well beyond the rounding the weights
+are nearly equal and the two fits agree.
+
 A simple value near a constant is admitted when the fit stays within a
 tolerance:
 
@@ -445,7 +461,9 @@ Constants are first snapped one at a time. An answer short of exact then
 has its constants chosen together: each constant inside a function takes
 its fitted value or one of the three nearest structural values its
 change alone admits, each scale and the offset is refitted or set to a
-nearby structural value (the offset also to 0), and every combination
+nearby structural value (the offset also to 0; a scale also to one of
+the three shortest decimals, the fitted value rounded to fewer
+significant digits, that its change alone admits), and every combination
 with more structural constants than the answer has, and within the
 tolerance, is offered to the criterion alongside the answer as it
 stands (at most 27 inner and 64 outer combinations). On an answer short
@@ -459,8 +477,11 @@ standard errors costs about z²/2 nats and making it structural saves
 more than k·ln(n)·(1 − R²)/n of R². One at a time, a snapped scale that
 needs the offset at 0 is never tried, because the offset refitted first
 absorbs the change; together, `x1/(4*pi*x2*x3)` on 1% noise is found
-where one at a time left `0.0795*x1/(x2*x3) + 0.0011`. An exact answer
-keeps a joint choice only if it is still exact.
+where one at a time left `0.0795*x1/(x2*x3) + 0.0011`. On
+`E = 1239.84/λ` written to six digits, one at a time the offset kept
+−3e-6 and the scale could not then reach 1239.84; together, offset 0 and
+scale 1239.84 land every row in its cell. An exact answer keeps a joint
+choice only if it is still exact.
 
 **Reductions.** The canonical stage then tries the smaller forms inside
 an answer (drop a term, unwrap a function, drop a factor or an argument
@@ -483,9 +504,11 @@ evenly spaced), in nats.
   spread σ² = u + s² + τ²: u is the feature cells' rounding carried
   through the answer when the features are read as rounded readings, or
   0 when they are read as exact settings (whichever costs less); s² is
-  extra noise fitted to the residuals, either the same on every row or
-  proportional to the predicted value (measurements good to a fraction
-  of their size), whichever costs less (½ ln n when not 0); τ is
+  extra noise, either the same on every row or proportional to the
+  predicted value (measurements good to a fraction of their size),
+  whichever costs less (½ ln n when not 0), at the level that makes the
+  rows cost least (searched over half decades below the mean squared
+  residual, then refined); τ is
   1e-13 of the value, the evaluation's own precision. A row costs
   −ln P, the probability that the predicted value rounds to the cell
   written: P = Φ((r + q/2)/σ) − Φ((r − q/2)/σ) for the residual r. An

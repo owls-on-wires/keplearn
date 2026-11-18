@@ -460,6 +460,8 @@ pub const JOINT_INNER_COMBOS: usize = 27;
 
 pub const JOINT_LINEAR_COMBOS: usize = 64;
 
+pub const JOINT_DECIMAL_DIGITS: usize = 8;
+
 #[allow(clippy::too_many_arguments)]
 pub fn snap_joint(
     e: &Expr,
@@ -533,6 +535,57 @@ pub fn snap_joint(
         };
         l.pop();
     }
+    let decimals: Vec<Vec<f64>> = {
+        let t = crate::forms::nf::eval_terms(e, x_fit, &fr.fitted.inner);
+        let th = crate::forms::nf::eval_terms(e, x_ho, &fr.fitted.inner);
+        let ones = vec![1.0f64; y_fit.len()];
+        fr.fitted
+            .coef
+            .iter()
+            .enumerate()
+            .map(|(i, &v)| {
+                let mut l: Vec<f64> = Vec::new();
+                if !(v.is_finite() && v != 0.0) {
+                    return l;
+                }
+                let mag = v.abs().log10().floor();
+                for sig in 1..=JOINT_DECIMAL_DIGITS {
+                    if l.len() >= JOINT_VALUES {
+                        break;
+                    }
+                    let p = 10f64.powf(mag - sig as f64 + 1.0);
+                    let c = (v / p).round() * p;
+                    if c == 0.0 || c == v || l.contains(&c) || crate::guard::structural_constant(c)
+                    {
+                        continue;
+                    }
+                    let yr: Vec<f64> = (0..y_fit.len()).map(|r| y_fit[r] - c * t[i][r]).collect();
+                    let mut cols: Vec<&[f64]> = (0..t.len())
+                        .filter(|&j| j != i)
+                        .map(|j| t[j].as_slice())
+                        .collect();
+                    cols.push(&ones);
+                    let Some(sol) = ls_cols(&cols, &yr) else {
+                        continue;
+                    };
+                    let mut it = sol.into_iter();
+                    let coef: Vec<f64> = (0..t.len())
+                        .map(|j| if j == i { c } else { it.next().unwrap_or(0.0) })
+                        .collect();
+                    let offset = it.next().unwrap_or(0.0);
+                    let f = Fitted {
+                        coef,
+                        offset,
+                        inner: fr.fitted.inner.clone(),
+                    };
+                    if score_with(&f, &th) >= base - 2.0 * tol {
+                        l.push(c);
+                    }
+                }
+                l
+            })
+            .collect()
+    };
     let mut opts: Vec<Fitted> = vec![fr.fitted.clone()];
     let mut combo = vec![0usize; inner_lists.len()];
     loop {
@@ -562,6 +615,13 @@ pub fn snap_joint(
                 )
                 .collect::<Vec<_>>();
             lin[0].dedup();
+            for (i, d) in decimals.iter().enumerate() {
+                for &c in d {
+                    if !lin[i + 1].contains(&Some(c)) {
+                        lin[i + 1].push(Some(c));
+                    }
+                }
+            }
             while lin.iter().map(|l| l.len()).product::<usize>() > JOINT_LINEAR_COMBOS {
                 let Some(l) = lin.iter_mut().max_by_key(|l| l.len()) else {
                     break;
