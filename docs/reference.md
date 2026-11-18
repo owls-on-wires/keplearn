@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.2.3, result schema `keplearn.result.v2`.
+Version 1.3.0, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -10,6 +10,8 @@ form of the same material.
 - [Options](#options)
 - [Output](#output)
 - [Verdicts](#verdicts)
+- [Scoring](#scoring)
+- [The selection criterion](#the-selection-criterion)
 - [How answers are ordered](#how-answers-are-ordered)
 - [Time budget](#time-budget)
 - [Memory limit](#memory-limit)
@@ -93,6 +95,7 @@ their written places. The rounding model matters only to the verdicts (see [the 
 | a header with no tab or comma | `the header has a single column (...)` |
 | a first row made of numbers that does not contain the target name | `the first row (...) holds numbers, not column names ...` |
 | no column named as the target | `target column '...' not found; columns are: ...` |
+| no data row with as many fields as the header | `no data row has the header's N fields (most rows have M); check that every row has a value for each column` |
 | a target but no numeric feature column | `input has a target column but no numeric feature columns` |
 | every feature column constant | `every feature column has the same value on every row ...` |
 | every row skipped | `no usable data rows` |
@@ -144,7 +147,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.2.3`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.0`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -188,7 +191,7 @@ null.
 | `named` | string | `symbolic` in the table's column names (a name that is not a plain identifier is written in backticks) |
 | `verdict` | string | this answer's verdict |
 | `r2` | number or null | R² of `model` evaluated on every row; null for a constant target. Rows where the model is undefined are left out, and the answer scores −1 if that is more than a tenth of them |
-| `holdout_r2` | number or null | R² on the held-out rows (`validation: holdout`) or by leave-one-out (`validation: leave-one-out`); null when it cannot be computed |
+| `holdout_r2` | number or null | the score the verdict reads (see [scoring](#scoring)): R² on the held-out rows (`validation: holdout`) or by leave-one-out (`validation: leave-one-out`); null when it cannot be computed |
 | `search_r2` | number or null | the search's internal score for the candidate, before it became this answer; diagnostic only, and it can be far above `r2` |
 | `free_constants` | integer or null | constants read off the data (see [free constants](#free-constants)); null when it cannot be counted |
 | `uses` | array of strings | the columns `model` reads, by name |
@@ -259,8 +262,10 @@ All of these hold:
    (1e-8 × the row's value)².
 4. **It is well conditioned.**
    - No term of any sum is negligible: its share of the sum is at least
-     the precision exact is judged at, the square root of the larger of
-     the rounding floor and 1e-9 (so at least 3e-5).
+     3e-5 (the square root of 1e-9, the precision of an exact fit on
+     full-precision data). On rounded data whether a term is needed is
+     decided by the [selection criterion](#the-selection-criterion): the
+     canonical stage drops it when the data do not pay for it.
    - No sum's terms exceed the sum itself by a factor of 1e6 (huge
      constants cancelling).
    - No function or power group has an argument that barely varies over
@@ -392,57 +397,111 @@ the other rows and predicts the left-out row, and R² is computed over
 those predictions. An answer with no constant at all is scored on its
 own R², since there is nothing to refit.
 
-**Constants.** Each answer's constants are refitted on the training rows,
-then snapped to a nearby simple value when the data cannot tell the
-difference:
+**The score printed.** `holdout_r2` is the score the verdict reads.
+Below 80 rows it is the lower of the leave-one-out R² with a refitted
+scale and offset around the answer and the leave-one-out R² with the
+answer's own constants refitted, so an answer printed without an offset
+is not credited with one. From 80 rows it is the held-out R² with a
+refitted scale and offset (the exact threshold is calibrated on it);
+every answer there carries its own fitted scale and offset.
 
-- on an exact fit, within a relative 1e-13 or within the rounding floor,
-  whichever is larger;
-- otherwise, within one standard error of the fitted value.
+**Constants.** Each answer's constants are refitted on the training rows.
+A simple value near a constant is admitted when the fit stays within a
+tolerance:
 
-Snap targets: zero; decimals of one to six significant digits and their
-halves, thirds and quarters; and the multiples of π, e, √2, √3 and their
-powers listed under [free constants](#free-constants). They are tried in
-order of the digits it takes to write them (the numerator's significant
+- on an exact fit, a relative 1e-13 or the rounding floor, whichever is
+  larger;
+- otherwise, one standard error of the fitted value.
+
+Admitted values: zero; decimals of one to six significant digits and
+their halves, thirds and quarters; and the multiples of π, e, √2, √3 and
+their powers listed under [free constants](#free-constants). Among the
+fitted value and every admitted one, the
+[selection criterion](#the-selection-criterion) chooses: the value it
+scores lowest, or, among the values within half a nat of that, the one
+that takes the fewest digits to write (the numerator's significant
 digits, the denominator's when it is not 1, and one for a named
-constant), and among equals the nearest first: a fitted 6.285 tries
-`2*pi` (one digit and a name) before `19/3` (two digits over one). Being snapped does not make a
-constant structural: a snapped 115 is still a free constant.
+constant). A fitted 6.285 on a two-digit pendulum becomes `2*pi`, which
+is structural and fits the rows better, not `19/3`, which the rounding
+floor also admits. Being snapped does not make a constant structural: a
+snapped 115 is still a free constant.
+
+Constants are first snapped one at a time. An answer short of exact then
+has its constants chosen together: each constant inside a function takes
+its fitted value or one of the three nearest structural values its
+change alone admits, each scale and the offset is refitted or set to a
+nearby structural value (the offset also to 0), and every combination
+with more structural constants than the answer has, and within the
+tolerance, is offered to the criterion alongside the answer as it
+stands (at most 27 inner and 64 outer combinations). On an answer short
+of exact a combination must also write fewer constants (a scale of 1, an
+offset of 0): there a snapped value only rounds a fitted one, so 8.31
+on a gas law at 1% noise stays 8.31 rather than becoming `7*2**(1/4)`,
+which the tolerance also admits. The tolerance here
+is widened to what the criterion could pay for: moving a constant by z
+standard errors costs about z²/2 nats and making it structural saves
+½ ln n, so a combination of k constants is admitted while it loses no
+more than k·ln(n)·(1 − R²)/n of R². One at a time, a snapped scale that
+needs the offset at 0 is never tried, because the offset refitted first
+absorbs the change; together, `x1/(4*pi*x2*x3)` on 1% noise is found
+where one at a time left `0.0795*x1/(x2*x3) + 0.0011`. An exact answer
+keeps a joint choice only if it is still exact.
+
+**Reductions.** The canonical stage then tries the smaller forms inside
+an answer (drop a term, unwrap a function, drop a factor or an argument
+constant), refitted. A smaller form replaces the answer when it is
+still exact (for an exact answer) and the selection criterion rises by
+no more than half a nat. On integer-written y = 2x + 1, dropping the
+offset leaves `2.2*x`: inside the rounding floor of whole numbers, but
+it adds a free constant and misses cells that `2*x + 1` hits exactly, so
+it is refused.
+
+## The selection criterion
+
+Wherever the data allow more than one answer (which constant value,
+whether a term stays, which answer comes first), one criterion decides:
+the description length of the answer on the training rows (at most 256,
+evenly spaced), in nats.
+
+- **The data given the answer.** Each target cell holds the true value
+  rounded to the cell's written place q. The answer predicts it with a
+  spread σ² = u + s² + τ²: u is the feature cells' rounding carried
+  through the answer when the features are read as rounded readings, or
+  0 when they are read as exact settings (whichever costs less); s² is
+  extra noise fitted to the residuals, either the same on every row or
+  proportional to the predicted value (measurements good to a fraction
+  of their size), whichever costs less (½ ln n when not 0); τ is
+  1e-13 of the value, the evaluation's own precision. A row costs
+  −ln P, the probability that the predicted value rounds to the cell
+  written: P = Φ((r + q/2)/σ) − Φ((r − q/2)/σ) for the residual r. An
+  answer that lands every row in its own cell costs nothing.
+- **The answer.** ½ ln n for each node of the expression and for each
+  free constant (integers, small fractions and named constants are not
+  free).
+
+Two answers within half a nat of each other (about one standard error of
+one constant) count as equally supported, and the simpler is taken.
 
 ## How answers are ordered
 
 Answers are ordered by verdict: every `exact` answer first, then
 `approximate`, then `no law found`. Within a verdict:
 
-- below 80 rows: exact answers by fewest free constants, then fewest
-  nodes; the rest by description length (the expression above, smallest
-  first);
-- from 80 rows: by description length on the held-out rows.
-
-Below 80 rows, when the target has one sign and spans a factor of 100 or
-more, and the first approximate answer misses some row by more than 5% of
-its value, approximate answers are ordered instead by the description
-length of their relative residuals ((y − p)/y), each row predicted by
-leave-one-out. On such a target r² is set by the largest values, and a form bent to
-them can miss the small rows by tens of percent.
-
-Within a verdict, an answer holding a saturated function (see rule 4
-above) comes after the answers without one.
+by the [selection criterion](#the-selection-criterion), lowest first,
+the search's order breaking ties. An answer holding a saturated function
+(see rule 4 above) comes after the answers without one.
 
 The verdicts are given to the first 3 × `--top-k` distinct candidates the
-search ranks highest, before this ordering.
+search ranks highest (below 80 rows, exact candidates by fewest free
+constants then fewest nodes, the rest by description length on the
+scoring rows; from 80 rows by description length on the held-out rows),
+before this ordering.
 
 Answers that share a structure are listed once (the best).
 
-Ranking uses the validation score (`holdout_r2`), not `r2`, so a lower
-answer can have the higher `r2`:
-
-- an exact answer ranks by simplicity, so a simpler exact answer can sit
-  above an alternative with a slightly higher `r2`, the difference being
-  within the data's precision;
-- among answers that are not exact, one that fits the supplied rows
-  better but predicts held-out or left-out rows worse (it is fitting the
-  noise) ranks lower.
+The criterion charges for size, so a lower answer can have the higher
+`r2`: a simpler answer can sit above an alternative whose extra terms or
+constants buy less fit than they cost.
 
 ## Time budget
 
@@ -479,7 +538,8 @@ The count is of the bytes the program asks for; the process's resident
 memory runs somewhat above it (the allocator's own overhead). Most tables
 stay in tens of megabytes. The sum-of-terms step holds up to two sets of
 4,000 prepared library terms, about 128 MB each, on tables of many
-columns, so 30-column tables reach about 200 MB.
+columns: measured at 30 searched columns, 170 to 190 MB on 50- and
+200-row tables and 430 MB on a 35-column table screened to 30.
 
 An exact answer ends the search early (`stopped_by: exact_exit`) when its
 canonical form is exact, reduced, holds on the rows at the edges of the
@@ -524,10 +584,11 @@ options stop at the same point.
   approximation is reported as `approximate` or `no law found`.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
   of the answer, but every column widens the search: thirty columns take
-  about 7 s and 200 MB even for an easy law. Above 30 columns the search
+  about 7 s and 170 MB to 430 MB even for an easy law
+  ([memory limit](#memory-limit)). Above 30 columns the search
   uses the 30 most related to the target (see [input](#input)); a
   two-column law among 45 to 400 columns of 50 or 200 rows was found
-  within a 10-second budget in under 200 MB. The product library uses
+  within a 10-second budget. The product library uses
   products of up to three columns up to 21 columns and of two beyond.
 - **Rows.** A table needs 5 rows to be searched; a law with k constants
   needs at least k + 3 rows to be exact. Five rows suffice for a law with
@@ -543,6 +604,7 @@ options stop at the same point.
   rather than the writer read as rounded to 1.
 - **Magnitudes.** Values beyond about 1e150 overflow when squared; the
   table is not rejected, but laws over such columns may not be found.
-- **Size.** Input over 1 GiB is rejected. The whole input is held in
-  memory, and the search uses at most `--sample` training rows (500 by
+- **Size.** Input over 1 GiB is rejected: a file redirected to stdin
+  before it is read, a pipe once 1 GiB has arrived. The whole input is
+  held in memory, and the search uses at most `--sample` training rows (500 by
   default).

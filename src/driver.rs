@@ -199,6 +199,36 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                     .join(", ")
             )
         })?;
+    {
+        let mut counts: std::collections::BTreeMap<usize, usize> =
+            std::collections::BTreeMap::new();
+        let mut matching = false;
+        for l in &lines[1..] {
+            let l = l.trim_end_matches('\r');
+            if l.is_empty() {
+                continue;
+            }
+            let k = split_row(l, delim).len();
+            if k == header.len() {
+                matching = true;
+                break;
+            }
+            *counts.entry(k).or_insert(0) += 1;
+        }
+        if !matching {
+            if let Some((&k, _)) = counts
+                .iter()
+                .max_by_key(|(k, c)| (**c, std::cmp::Reverse(**k)))
+            {
+                return Err(
+                    format!(
+                        "no data row has the header's {} fields (most rows have {}); check that every row has a value for each column",
+                        header.len(), k
+                    ),
+                );
+            }
+        }
+    }
     let mut is_numeric = vec![false; header.len()];
     let mut unseen = header.len();
     for l in &lines[1..] {
@@ -495,6 +525,13 @@ pub fn run(cfg: Config) {
             }
         };
         let _ = TRACER.set(Mutex::new(BufWriter::new(f)));
+    }
+    if stdin_file_len().is_some_and(|n| n > INPUT_BYTE_CAP) {
+        eprintln!(
+            "keplearn: input exceeds the {} MiB cap",
+            INPUT_BYTE_CAP >> 20
+        );
+        std::process::exit(1);
     }
     let mut raw = Vec::new();
     if let Err(e) = std::io::stdin()
@@ -1550,6 +1587,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }) {
                     Some(r) => {
                         let s = out_ho[ci].map_or(r, |o| o.min(r));
+                        out_ho[ci] = Some(s);
                         (
                             Some(s),
                             (s > 0.0).then(|| mdl_dl(train_n as f64, s, c.nodes as f64)),
@@ -1612,30 +1650,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             .iter()
             .map(|e| crate::guard::has_saturated(&finalists[e.ci].model, &features, n_rows))
             .collect();
-        let first_approx = pool.iter().find(|e| e.v == "approximate").map(|e| e.ci);
-        let reorder = hold_n == 0
-            && first_approx.is_some_and(|ci| {
-                crate::guard::largest_miss(&finalists[ci].model, &features, &target, n_rows)
-                    .is_some_and(|(m, _)| m > RANK_MISS_REL)
-            });
         let rel: Vec<f64> = pool
             .iter()
-            .map(|e| {
-                if e.v == "approximate" && reorder {
-                    crate::guard::relative_dl(
-                        &finalists[e.ci].model,
-                        &features,
-                        &target,
-                        n_cols,
-                        train_n,
-                        finalists[e.ci].nodes,
-                        hold_n == 0,
-                    )
-                    .unwrap_or(0.0)
-                } else {
-                    0.0
-                }
-            })
+            .map(|e| crate::guard::cached_dl(&finalists[e.ci].model, &features, &target, train_n))
             .collect();
         let mut keyed: Vec<(usize, bool, f64, Entry)> = pool
             .into_iter()
@@ -1973,4 +1990,28 @@ fn screen_columns(features: &[Vec<f64>], target: &[f64], k: usize) -> Vec<usize>
     let mut keep: Vec<usize> = scored.into_iter().take(k).map(|(_, j)| j).collect();
     keep.sort_unstable();
     keep
+}
+
+fn stdin_file_len() -> Option<u64> {
+    #[cfg(unix)]
+    let f: fs::File = {
+        use std::os::fd::AsFd;
+        std::io::stdin().as_fd().try_clone_to_owned().ok()?.into()
+    };
+    #[cfg(windows)]
+    let f: fs::File = {
+        use std::os::windows::io::AsHandle;
+        std::io::stdin()
+            .as_handle()
+            .try_clone_to_owned()
+            .ok()?
+            .into()
+    };
+    #[cfg(not(any(unix, windows)))]
+    return None;
+    #[cfg(any(unix, windows))]
+    {
+        let m = f.metadata().ok()?;
+        m.is_file().then(|| m.len())
+    }
 }

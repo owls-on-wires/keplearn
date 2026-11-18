@@ -59,7 +59,17 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
             vals.push(c);
         }
     }
+    #[cfg(test)]
+    if REVERSED_ORDER.with(|r| r.get()) {
+        vals.reverse();
+    }
     vals
+}
+
+#[cfg(test)]
+thread_local! {
+    pub static REVERSED_ORDER : std::cell::Cell < bool > = const {
+    std::cell::Cell::new(false) };
 }
 
 pub struct Extrap {
@@ -110,22 +120,260 @@ impl Extrap {
     }
 }
 
-fn coef_for_offset(t: &[Vec<f64>], y: &[f64], offset: f64) -> Option<Vec<f64>> {
+fn offset_solver(t: &[Vec<f64>], y: &[f64]) -> impl Fn(f64) -> Option<Vec<f64>> {
     let k = t.len();
-    let n = y.len();
-    let rows: Vec<usize> = (0..n)
+    let rows: Vec<usize> = (0..y.len())
         .filter(|&r| y[r].is_finite() && t.iter().all(|g| g[r].is_finite()))
         .collect();
-    if k == 0 || rows.len() < k {
+    let ok = k > 0 && rows.len() >= k;
+    let mut g = vec![0.0f64; k * k];
+    let mut ty = vec![0.0f64; k];
+    let mut t1 = vec![0.0f64; k];
+    for &r in &rows {
+        for i in 0..k {
+            for j in 0..k {
+                g[i * k + j] += t[i][r] * t[j][r];
+            }
+            ty[i] += t[i][r] * y[r];
+            t1[i] += t[i][r];
+        }
+    }
+    move |offset: f64| -> Option<Vec<f64>> {
+        if !ok {
+            return None;
+        }
+        let mut a = vec![0.0f64; k * (k + 1)];
+        for i in 0..k {
+            a[i * (k + 1)..i * (k + 1) + k].copy_from_slice(&g[i * k..(i + 1) * k]);
+            a[i * (k + 1) + k] = ty[i] - offset * t1[i];
+        }
+        for col in 0..k {
+            let piv = (col..k).max_by(|&p, &q| {
+                a[p * (k + 1) + col]
+                    .abs()
+                    .total_cmp(&a[q * (k + 1) + col].abs())
+            })?;
+            if a[piv * (k + 1) + col].abs() < 1e-300 {
+                return None;
+            }
+            for c in 0..=k {
+                a.swap(col * (k + 1) + c, piv * (k + 1) + c);
+            }
+            for r in 0..k {
+                if r != col {
+                    let f = a[r * (k + 1) + col] / a[col * (k + 1) + col];
+                    for c in col..=k {
+                        a[r * (k + 1) + c] -= f * a[col * (k + 1) + c];
+                    }
+                }
+            }
+        }
+        let c: Vec<f64> = (0..k)
+            .map(|i| a[i * (k + 1) + k] / a[i * (k + 1) + i])
+            .collect();
+        c.iter().all(|v| v.is_finite()).then_some(c)
+    }
+}
+
+pub fn snap(
+    e: &Expr,
+    fr: &mut FitResult,
+    x_fit: &[Vec<f64>],
+    y_fit: &[f64],
+    x_ho: &[Vec<f64>],
+    y_ho: &[f64],
+    tol: f64,
+) {
+    snap_by(e, fr, x_fit, y_fit, x_ho, y_ho, tol, true, None)
+}
+
+pub type SnapChoice<'a> = &'a dyn Fn(&[crate::forms::nf::Fitted]) -> usize;
+
+#[allow(clippy::too_many_arguments)]
+pub fn snap_by(
+    e: &Expr,
+    fr: &mut FitResult,
+    x_fit: &[Vec<f64>],
+    y_fit: &[f64],
+    x_ho: &[Vec<f64>],
+    y_ho: &[f64],
+    tol: f64,
+    inner: bool,
+    choose: Option<SnapChoice>,
+) {
+    let terms: std::cell::RefCell<std::collections::HashMap<Vec<u64>, std::rc::Rc<Vec<Vec<f64>>>>> =
+        Default::default();
+    let score = |f: &crate::forms::nf::Fitted| -> f64 {
+        let key: Vec<u64> = f.inner.iter().map(|v| v.to_bits()).collect();
+        let t = terms.borrow().get(&key).cloned();
+        let t = t.unwrap_or_else(|| {
+            let t = std::rc::Rc::new(crate::forms::nf::eval_terms(e, x_ho, &f.inner));
+            terms.borrow_mut().insert(key, t.clone());
+            t
+        });
+        let yhat: Vec<f64> = (0..y_ho.len())
+            .map(|r| {
+                f.offset
+                    + f.coef
+                        .iter()
+                        .zip(t.iter())
+                        .map(|(c, g)| c * g[r])
+                        .sum::<f64>()
+            })
+            .collect();
+        crate::forms::fit::r2(y_ho, &yhat)
+    };
+    let base = score(&fr.fitted);
+    if !base.is_finite() {
+        return;
+    }
+    let admitted = |f: &crate::forms::nf::Fitted| score(f) >= base - tol;
+    let every = |n: usize| -> Vec<usize> {
+        if n > SNAP_SCREEN_ROWS {
+            (0..SNAP_SCREEN_ROWS)
+                .map(|k| k * n / SNAP_SCREEN_ROWS)
+                .collect()
+        } else {
+            (0..n).collect()
+        }
+    };
+    let (sf, sh) = (every(y_fit.len()), every(y_ho.len()));
+    let xs_fit: Vec<Vec<f64>> = x_fit
+        .iter()
+        .map(|c| sf.iter().map(|&r| c[r]).collect())
+        .collect();
+    let ys_fit: Vec<f64> = sf.iter().map(|&r| y_fit[r]).collect();
+    let xs_ho: Vec<Vec<f64>> = x_ho
+        .iter()
+        .map(|c| sh.iter().map(|&r| c[r]).collect())
+        .collect();
+    let ys_ho: Vec<f64> = sh.iter().map(|&r| y_ho[r]).collect();
+    let r2_on = |inner: &[f64],
+                 x_fit: &[Vec<f64>],
+                 y_fit: &[f64],
+                 x_ho: &[Vec<f64>],
+                 y_ho: &[f64]|
+     -> Option<f64> {
+        let t = crate::forms::nf::eval_terms(e, x_fit, inner);
+        let (coef, offset) = crate::forms::fit::linear_fit(&t, y_fit)?;
+        let th = crate::forms::nf::eval_terms(e, x_ho, inner);
+        let yhat: Vec<f64> = (0..y_ho.len())
+            .map(|r| offset + coef.iter().zip(&th).map(|(c, g)| c * g[r]).sum::<f64>())
+            .collect();
+        Some(crate::forms::fit::r2(y_ho, &yhat))
+    };
+    let base_s =
+        r2_on(&fr.fitted.inner, &xs_fit, &ys_fit, &xs_ho, &ys_ho).unwrap_or(f64::NEG_INFINITY);
+    let screened = |inner: &[f64]| -> bool {
+        choose.is_none()
+            || sf.len() == y_fit.len()
+            || r2_on(inner, &xs_fit, &ys_fit, &xs_ho, &ys_ho)
+                .is_some_and(|r| r >= base_s - 2.0 * tol)
+    };
+    let pick = |opts: Vec<crate::forms::nf::Fitted>| -> crate::forms::nf::Fitted {
+        let k = match choose {
+            Some(c) if opts.len() > 1 => c(&opts).min(opts.len() - 1),
+            _ => usize::from(opts.len() > 1),
+        };
+        opts.into_iter().nth(k).unwrap()
+    };
+    let gather = |vals: Vec<f64>,
+                  build: &mut dyn FnMut(f64) -> Option<crate::forms::nf::Fitted>,
+                  opts: &mut Vec<crate::forms::nf::Fitted>| {
+        let mut free = 0;
+        for v in vals {
+            let structural = crate::guard::structural_constant(v);
+            if choose.is_some() && !structural && free >= SNAP_FREE_OPTIONS {
+                continue;
+            }
+            let Some(f) = build(v) else { continue };
+            if admitted(&f) {
+                opts.push(f);
+                if choose.is_none() {
+                    return;
+                }
+                if !structural {
+                    free += 1;
+                }
+            }
+        }
+    };
+    for k in 0..if inner { fr.fitted.inner.len() } else { 0 } {
+        let mut opts = vec![fr.fitted.clone()];
+        let cur = fr.fitted.inner.clone();
+        let mut build = |cand: f64| {
+            let mut inner = cur.clone();
+            inner[k] = cand;
+            if !screened(&inner) {
+                return None;
+            }
+            let t = crate::forms::nf::eval_terms(e, x_fit, &inner);
+            let (coef, offset) = crate::forms::fit::linear_fit(&t, y_fit)?;
+            let f = crate::forms::nf::Fitted {
+                coef,
+                offset,
+                inner,
+            };
+            Some(f)
+        };
+        gather(nice_near(fr.fitted.inner[k]), &mut build, &mut opts);
+        fr.fitted = pick(opts);
+    }
+    let t_fit = crate::forms::nf::eval_terms(e, x_fit, &fr.fitted.inner);
+    let mut opts = vec![fr.fitted.clone()];
+    let cur = fr.fitted.clone();
+    let solve = offset_solver(&t_fit, y_fit);
+    let mut build = |cand: f64| {
+        let coef = solve(cand).unwrap_or_else(|| cur.coef.clone());
+        Some(crate::forms::nf::Fitted {
+            coef,
+            offset: cand,
+            inner: cur.inner.clone(),
+        })
+    };
+    gather(nice_near(fr.fitted.offset), &mut build, &mut opts);
+    fr.fitted = pick(opts);
+    for t in 0..fr.fitted.coef.len() {
+        let mut opts = vec![fr.fitted.clone()];
+        let cur = fr.fitted.clone();
+        let mut build = |cand: f64| {
+            let mut f = cur.clone();
+            f.coef[t] = cand;
+            Some(f)
+        };
+        gather(
+            nice_near(cur.coef[t])
+                .into_iter()
+                .filter(|c| *c != 0.0)
+                .collect(),
+            &mut build,
+            &mut opts,
+        );
+        fr.fitted = pick(opts);
+    }
+    fr.r2_holdout = score(&fr.fitted);
+}
+
+pub const SNAP_SCREEN_ROWS: usize = 256;
+
+fn ls_cols(cols: &[&[f64]], y: &[f64]) -> Option<Vec<f64>> {
+    let k = cols.len();
+    if k == 0 {
+        return Some(Vec::new());
+    }
+    let rows: Vec<usize> = (0..y.len())
+        .filter(|&r| y[r].is_finite() && cols.iter().all(|c| c[r].is_finite()))
+        .collect();
+    if rows.len() < k {
         return None;
     }
     let mut a = vec![0.0f64; k * (k + 1)];
     for &r in &rows {
         for i in 0..k {
             for j in 0..k {
-                a[i * (k + 1) + j] += t[i][r] * t[j][r];
+                a[i * (k + 1) + j] += cols[i][r] * cols[j][r];
             }
-            a[i * (k + 1) + k] += t[i][r] * (y[r] - offset);
+            a[i * (k + 1) + k] += cols[i][r] * y[r];
         }
     }
     for col in 0..k {
@@ -149,26 +397,38 @@ fn coef_for_offset(t: &[Vec<f64>], y: &[f64], offset: f64) -> Option<Vec<f64>> {
             }
         }
     }
-    let x: Vec<f64> = (0..k)
+    let c: Vec<f64> = (0..k)
         .map(|i| a[i * (k + 1) + k] / a[i * (k + 1) + i])
         .collect();
-    x.iter().all(|v| v.is_finite()).then_some(x)
+    c.iter().all(|v| v.is_finite()).then_some(c)
 }
 
-pub fn snap(
-    e: &Expr,
-    fr: &mut FitResult,
-    x_fit: &[Vec<f64>],
-    y_fit: &[f64],
-    x_ho: &[Vec<f64>],
-    y_ho: &[f64],
-    tol: f64,
-) {
-    snap_with(e, fr, x_fit, y_fit, x_ho, y_ho, tol, true)
+fn structural_count(f: &crate::forms::nf::Fitted) -> usize {
+    f.inner
+        .iter()
+        .chain(f.coef.iter())
+        .chain(std::iter::once(&f.offset))
+        .filter(|v| crate::guard::structural_constant(**v))
+        .count()
 }
+
+fn written_count(f: &crate::forms::nf::Fitted) -> usize {
+    f.coef.iter().filter(|v| **v != 1.0).count()
+        + usize::from(f.offset != 0.0)
+        + f.inner
+            .iter()
+            .filter(|v| v.abs() != 1.0 && **v != 0.0)
+            .count()
+}
+
+pub const JOINT_VALUES: usize = 3;
+
+pub const JOINT_INNER_COMBOS: usize = 27;
+
+pub const JOINT_LINEAR_COMBOS: usize = 64;
 
 #[allow(clippy::too_many_arguments)]
-pub fn snap_with(
+pub fn snap_joint(
     e: &Expr,
     fr: &mut FitResult,
     x_fit: &[Vec<f64>],
@@ -176,70 +436,188 @@ pub fn snap_with(
     x_ho: &[Vec<f64>],
     y_ho: &[f64],
     tol: f64,
-    inner: bool,
+    exact: bool,
+    choose: SnapChoice,
 ) {
-    let score = |f: &crate::forms::nf::Fitted| -> f64 {
-        let t = crate::forms::nf::eval_terms(e, x_ho, &f.inner);
+    use crate::forms::nf::Fitted;
+    let score_with = |f: &Fitted, th: &[Vec<f64>]| -> f64 {
         let yhat: Vec<f64> = (0..y_ho.len())
-            .map(|r| f.offset + f.coef.iter().zip(&t).map(|(c, g)| c * g[r]).sum::<f64>())
+            .map(|r| f.offset + f.coef.iter().zip(th).map(|(c, g)| c * g[r]).sum::<f64>())
             .collect();
         crate::forms::fit::r2(y_ho, &yhat)
     };
-    let base = score(&fr.fitted);
+    let th0 = crate::forms::nf::eval_terms(e, x_ho, &fr.fitted.inner);
+    let base = score_with(&fr.fitted, &th0);
     if !base.is_finite() {
         return;
     }
-    for k in 0..if inner { fr.fitted.inner.len() } else { 0 } {
-        for cand in nice_near(fr.fitted.inner[k]) {
-            let mut inner = fr.fitted.inner.clone();
-            inner[k] = cand;
-            let t = crate::forms::nf::eval_terms(e, x_fit, &inner);
-            let Some((coef, offset)) = crate::forms::fit::linear_fit(&t, y_fit) else {
-                continue;
-            };
-            let f = crate::forms::nf::Fitted {
-                coef,
-                offset,
-                inner,
-            };
-            if score(&f) >= base - tol {
-                fr.fitted = f;
-                break;
+    let n_ho = y_ho.len().max(2) as f64;
+    let n_consts = (fr.fitted.inner.len() + fr.fitted.coef.len() + 1) as f64;
+    let tol = tol.max(n_consts * n_ho.ln() * (1.0 - base).max(0.0) / n_ho);
+    let near = |v: f64, n: usize| -> Vec<f64> {
+        let mut c: Vec<f64> = nice_near(v)
+            .into_iter()
+            .filter(|c| *c != v && crate::guard::structural_constant(*c))
+            .collect();
+        c.sort_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()));
+        c.dedup();
+        c.truncate(n);
+        c
+    };
+    let mut inner_lists: Vec<Vec<f64>> = fr
+        .fitted
+        .inner
+        .iter()
+        .enumerate()
+        .map(|(j, &v)| {
+            let mut l = vec![v];
+            for c in near(v, 2 * JOINT_VALUES) {
+                if l.len() > JOINT_VALUES {
+                    break;
+                }
+                let mut inner = fr.fitted.inner.clone();
+                inner[j] = c;
+                let t = crate::forms::nf::eval_terms(e, x_fit, &inner);
+                let Some((coef, offset)) = crate::forms::fit::linear_fit(&t, y_fit) else {
+                    continue;
+                };
+                let th = crate::forms::nf::eval_terms(e, x_ho, &inner);
+                let f = Fitted {
+                    coef,
+                    offset,
+                    inner,
+                };
+                if score_with(&f, &th) >= base - 2.0 * tol {
+                    l.push(c);
+                }
+            }
+            l
+        })
+        .collect();
+    while inner_lists.iter().map(|l| l.len()).product::<usize>() > JOINT_INNER_COMBOS {
+        let Some(l) = inner_lists.iter_mut().max_by_key(|l| l.len()) else {
+            break;
+        };
+        l.pop();
+    }
+    let mut opts: Vec<Fitted> = vec![fr.fitted.clone()];
+    let mut combo = vec![0usize; inner_lists.len()];
+    loop {
+        let inner: Vec<f64> = combo.iter().zip(&inner_lists).map(|(&k, l)| l[k]).collect();
+        let t = crate::forms::nf::eval_terms(e, x_fit, &inner);
+        let th = crate::forms::nf::eval_terms(e, x_ho, &inner);
+        if let Some((coef0, off0)) = crate::forms::fit::linear_fit(&t, y_fit) {
+            let mut lin: Vec<Vec<Option<f64>>> = std::iter::once(off0)
+                .chain(coef0.iter().copied())
+                .map(|v| {
+                    std::iter::once(None)
+                        .chain(
+                            near(v, JOINT_VALUES)
+                                .into_iter()
+                                .filter(|c| *c != 0.0 || v.abs() < 1e-300)
+                                .map(Some),
+                        )
+                        .collect()
+                })
+                .collect();
+            lin[0] = std::iter::once(None)
+                .chain(
+                    near(off0, JOINT_VALUES)
+                        .into_iter()
+                        .chain(std::iter::once(0.0))
+                        .map(Some),
+                )
+                .collect::<Vec<_>>();
+            lin[0].dedup();
+            while lin.iter().map(|l| l.len()).product::<usize>() > JOINT_LINEAR_COMBOS {
+                let Some(l) = lin.iter_mut().max_by_key(|l| l.len()) else {
+                    break;
+                };
+                l.pop();
+            }
+            let mut lc = vec![0usize; lin.len()];
+            loop {
+                let choice: Vec<Option<f64>> = lc.iter().zip(&lin).map(|(&k, l)| l[k]).collect();
+                let fixed_off = choice[0];
+                let mut yr: Vec<f64> = y_fit.iter().map(|v| v - fixed_off.unwrap_or(0.0)).collect();
+                for (i, c) in choice[1..].iter().enumerate() {
+                    if let Some(c) = c {
+                        for r in 0..yr.len() {
+                            yr[r] -= c * t[i][r];
+                        }
+                    }
+                }
+                let ones = vec![1.0f64; y_fit.len()];
+                let mut cols: Vec<&[f64]> = Vec::new();
+                for (i, c) in choice[1..].iter().enumerate() {
+                    if c.is_none() {
+                        cols.push(&t[i]);
+                    }
+                }
+                if fixed_off.is_none() {
+                    cols.push(&ones);
+                }
+                if let Some(sol) = ls_cols(&cols, &yr) {
+                    let mut it = sol.into_iter();
+                    let coef: Vec<f64> = choice[1..]
+                        .iter()
+                        .map(|c| c.unwrap_or_else(|| it.next().unwrap_or(0.0)))
+                        .collect();
+                    let offset = fixed_off.unwrap_or_else(|| it.next().unwrap_or(0.0));
+                    let f = Fitted {
+                        coef,
+                        offset,
+                        inner: inner.clone(),
+                    };
+                    let gains = if exact {
+                        structural_count(&f) > structural_count(&fr.fitted)
+                    } else {
+                        written_count(&f) < written_count(&fr.fitted)
+                    };
+                    if f.coef.iter().all(|v| v.is_finite())
+                        && gains
+                        && score_with(&f, &th) >= base - tol
+                    {
+                        opts.push(f);
+                    }
+                }
+                let mut i = 0;
+                while i < lc.len() {
+                    lc[i] += 1;
+                    if lc[i] < lin[i].len() {
+                        break;
+                    }
+                    lc[i] = 0;
+                    i += 1;
+                }
+                if i == lc.len() {
+                    break;
+                }
             }
         }
-    }
-    let t_fit = crate::forms::nf::eval_terms(e, x_fit, &fr.fitted.inner);
-    for cand in nice_near(fr.fitted.offset) {
-        let coef = coef_for_offset(&t_fit, y_fit, cand).unwrap_or_else(|| fr.fitted.coef.clone());
-        let mut f = crate::forms::nf::Fitted {
-            coef,
-            offset: cand,
-            inner: fr.fitted.inner.clone(),
-        };
-        if score(&f) >= base - tol {
-            std::mem::swap(&mut fr.fitted, &mut f);
+        let mut i = 0;
+        while i < combo.len() {
+            combo[i] += 1;
+            if combo[i] < inner_lists[i].len() {
+                break;
+            }
+            combo[i] = 0;
+            i += 1;
+        }
+        if i == combo.len() {
             break;
         }
     }
-    for t in 0..fr.fitted.coef.len() {
-        for cand in nice_near(fr.fitted.coef[t]) {
-            if cand == 0.0 {
-                continue;
-            }
-            let mut f = crate::forms::nf::Fitted {
-                coef: fr.fitted.coef.clone(),
-                offset: fr.fitted.offset,
-                inner: fr.fitted.inner.clone(),
-            };
-            f.coef[t] = cand;
-            if score(&f) >= base - tol {
-                std::mem::swap(&mut fr.fitted, &mut f);
-                break;
-            }
-        }
+    if opts.len() > 1 {
+        let k = choose(&opts).min(opts.len() - 1);
+        let f = opts.swap_remove(k);
+        let th = crate::forms::nf::eval_terms(e, x_ho, &f.inner);
+        fr.r2_holdout = score_with(&f, &th);
+        fr.fitted = f;
     }
-    fr.r2_holdout = score(&fr.fitted);
 }
+
+pub const SNAP_FREE_OPTIONS: usize = 3;
 
 pub fn is_degenerate(e: &Expr, cols: &[Vec<f64>], inner: &[f64], rel: f64) -> bool {
     for st in crate::forms::nf::arg_stats(e, cols, inner) {

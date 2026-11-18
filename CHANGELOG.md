@@ -1,5 +1,59 @@
 # Changelog
 
+## 1.3.0
+
+The output schema is unchanged (`keplearn.result.v2`).
+
+**One selection criterion**
+
+- Where the data allow more than one answer, one description length now
+  decides: the cost of the target's cells given the answer, judged
+  against the precision they are written to (the feature cells' rounding
+  carried through the answer, read as exact settings or as rounded
+  readings, whichever costs less, and any extra noise, additive or
+  relative), plus ½ ln n for each node and each free constant. The
+  reference documents it under "The selection criterion".
+- Snapped constants: among every simple value the tolerance admits, the
+  criterion chooses; the order the values are tried in only breaks ties.
+  A two-digit pendulum gives `2*pi*sqrt(L/g)` whichever order they come
+  in.
+- An answer short of exact has its constants chosen together, not only
+  one at a time: combinations of nearby structural values (and an offset
+  of 0) are offered to the criterion, admitted while the R² they lose is
+  within what the criterion could pay for (k·ln(n)·(1 − R²)/n for k
+  constants). On 1% noise, `x1/(4*pi*x2*x3)` is found where one at a
+  time left `0.0795*x1/(x2*x3) + 0.0011`: the offset, refitted first,
+  absorbed each single change. On an answer short of exact a joint
+  choice must write fewer constants, so a fitted 8.31 is not traded for
+  a named product such as `7*2**(1/4)`.
+- Reductions (dropping a term, unwrapping a function, dropping a factor)
+  are kept only when the criterion does not rise. On whole numbers, read
+  as known to a unit, the reductions traded `2*x + 1` for `2.2*x`
+  (verdict exact, r2 0.99): an offset dropped inside the rounding floor.
+  It is now refused, and `y = 2x + 1`, `a*b + 3` and `2*x + 100` written
+  as integers are exact.
+- A term is negligible in the exact verdict only below the precision of
+  a full-precision fit; on rounded data the criterion decides whether a
+  term stays (the rounding floor of whole numbers called an offset of up
+  to 14% of a sum negligible).
+- Answers within a verdict are ordered by the criterion. The 1.2.1
+  ordering by relative misses is removed; relative noise in the
+  criterion covers the targets it was for.
+- Below 80 rows, `holdout_r2` is the score the verdict reads (it was the
+  leave-one-out of the answer with a refitted scale and offset, so
+  `2.2*x` reported 1).
+
+**Input**
+
+- A table whose rows have fewer fields than its header says so, instead
+  of "no numeric feature columns".
+- A file over 1 GiB redirected to stdin is refused before it is read.
+
+**Documentation**
+
+- The reference's memory figures for 30 searched columns are measured
+  (170 to 430 MB).
+
 ## 1.2.3
 
 - Constants snap to the simple value that takes the fewest digits to

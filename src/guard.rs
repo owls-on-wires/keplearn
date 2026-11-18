@@ -114,16 +114,28 @@ fn canonical_core(
             snap_tol.max(stat_tol(fr.r2_holdout))
         };
         let pre = exact.then(|| fr.clone());
-        crate::forms::search::snap(e, &mut fr, &xf, &yf, &xh, &yh, tol);
+        let choose =
+            |opts: &[crate::forms::nf::Fitted]| snap_choice(e, opts, features, target, train_n);
+        let chooser: Option<crate::forms::search::SnapChoice> =
+            (tol > crate::forms::search::SNAP_TOL).then_some(&choose);
+        crate::forms::search::snap_by(e, &mut fr, &xf, &yf, &xh, &yh, tol, true, chooser);
         if let Some(mut alt) = pre {
             if !inner_unchanged(&alt, &fr) && !rows_ok(e, &fr) {
-                crate::forms::search::snap_with(e, &mut alt, &xf, &yf, &xh, &yh, tol, false);
+                crate::forms::search::snap_by(e, &mut alt, &xf, &yf, &xh, &yh, tol, false, chooser);
                 if rows_ok(e, &alt) {
                     fr = alt;
                 }
             }
         }
         Some(fr)
+    };
+    let dl = |e: &crate::forms::nf::Expr, fr: &crate::forms::fit::FitResult| {
+        cached_dl(
+            &crate::forms::nf::print_answer(e, &fr.fitted),
+            features,
+            target,
+            train_n,
+        )
     };
     let fr0 = fit(&e0)?;
     let mut cur = (e0, fr0);
@@ -143,7 +155,10 @@ fn canonical_core(
                     break 'outer;
                 }
                 let Some(f) = fit(&c) else { continue };
-                if f.is_exact(&cfg) && ext.holds(&c, &f, &cfg) {
+                if f.is_exact(&cfg)
+                    && ext.holds(&c, &f, &cfg)
+                    && no_worse(dl(&c, &f), dl(&cur.0, &cur.1))
+                {
                     cur = (c, f);
                     changed = true;
                     continue 'outer;
@@ -158,7 +173,6 @@ fn canonical_core(
             return None;
         }
     } else if !over {
-        let base = cur.1.r2_holdout;
         'noisy: loop {
             let inner = &cur.1.fitted.inner;
             let cands = crate::forms::repair::reductions(&cur.0, inner, &red_lim)
@@ -169,7 +183,7 @@ fn canonical_core(
                     break 'noisy;
                 }
                 let Some(f) = fit(&c) else { continue };
-                if f.r2_holdout >= base - stat_tol(base) {
+                if no_worse(dl(&c, &f), dl(&cur.0, &cur.1)) {
                     cur = (c, f);
                     continue 'noisy;
                 }
@@ -177,8 +191,31 @@ fn canonical_core(
             break;
         }
     }
+    {
+        let exact = cur.1.is_exact(&cfg);
+        let tol = if exact {
+            snap_tol
+        } else {
+            snap_tol.max(stat_tol(cur.1.r2_holdout))
+        };
+        if tol > crate::forms::search::SNAP_TOL && !crate::out_of_budget() {
+            let e = cur.0.clone();
+            let choose = |opts: &[crate::forms::nf::Fitted]| {
+                snap_choice(&e, opts, features, target, train_n)
+            };
+            let mut f = cur.1.clone();
+            crate::forms::search::snap_joint(&e, &mut f, &xf, &yf, &xh, &yh, tol, exact, &choose);
+            if !exact || f.is_exact(&cfg) {
+                cur.1 = f;
+            }
+        }
+    }
     let exact = cur.1.is_exact(&cfg);
     Some((cur.0, cur.1, exact, xf))
+}
+
+fn no_worse(d: f64, d0: f64) -> bool {
+    d.is_finite() && d0.is_finite() && d <= d0 + DL_BAND
 }
 
 fn inner_unchanged(a: &crate::forms::fit::FitResult, b: &crate::forms::fit::FitResult) -> bool {
@@ -218,39 +255,6 @@ pub(crate) fn all_constants(model: &str) -> Option<usize> {
         crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
     Some(
         f.coef.iter().filter(|v| **v != 1.0).count() + usize::from(f.offset != 0.0) + f.inner.len(),
-    )
-}
-
-pub(crate) fn loo_refit_predictions(
-    model: &str,
-    features: &[Vec<f64>],
-    target: &[f64],
-    n_cols: usize,
-    n: usize,
-) -> Option<Vec<Option<f64>>> {
-    let (e, f0) =
-        crate::forms::canon::normalize(&tame_scales(crate::forms::ast::parse(model).ok()?)).ok()?;
-    let cfg = crate::forms::fit::FitConfig::default();
-    let cols: Vec<Vec<f64>> = features[..n_cols].iter().map(|c| c[..n].to_vec()).collect();
-    Some(
-        (0..n)
-            .map(|i| {
-                let rest: Vec<usize> = (0..n).filter(|&k| k != i).collect();
-                let xf = crate::forms::fit::gather(&cols, &rest);
-                let yf: Vec<f64> = rest.iter().map(|&k| target[k]).collect();
-                let xi = crate::forms::fit::gather(&cols, &[i]);
-                let fr = crate::forms::fit::refit_from(&e, &f0.inner, &xf, &yf, &xf, &yf, &cfg)?;
-                let t = crate::forms::nf::eval_terms(&e, &xi, &fr.fitted.inner);
-                let p = fr.fitted.offset
-                    + fr.fitted
-                        .coef
-                        .iter()
-                        .zip(&t)
-                        .map(|(c, g)| c * g[0])
-                        .sum::<f64>();
-                p.is_finite().then_some(p)
-            })
-            .collect(),
     )
 }
 
@@ -359,6 +363,7 @@ thread_local! {
 
 pub(crate) fn set_quanta(q_features: &[Vec<f64>], q_target: &[f64]) {
     QUANTA.with(|q| *q.borrow_mut() = (q_features.to_vec(), q_target.to_vec()));
+    clear_dl_cache();
 }
 
 pub(crate) fn fits_each_row(model: &str, features: &[Vec<f64>], target: &[f64], n: usize) -> bool {
@@ -450,12 +455,7 @@ pub(crate) fn well_conditioned(model: &str, features: &[Vec<f64>], n: usize) -> 
         if sa == 0.0 || sb == 0.0 || !(sv > 0.0) {
             continue;
         }
-        let negligible = COND_NEGLIGIBLE.max(
-            FLOOR
-                .with(|f| f.get())
-                .max(1.0 - crate::config::EXACT_EXIT_R2)
-                .sqrt(),
-        );
+        let negligible = COND_NEGLIGIBLE.max((1.0 - crate::config::EXACT_EXIT_R2).sqrt());
         if sa.min(sb) < negligible * sv || sa + sb > COND_CANCEL_MAX * sv {
             return false;
         }
@@ -613,50 +613,6 @@ pub(crate) fn padding_removable(
         .any(|&(at, v)| r2_of(&replace(&ast, at, v, &mut 0)) >= base - tol)
 }
 
-pub(crate) fn relative_dl(
-    model: &str,
-    features: &[Vec<f64>],
-    target: &[f64],
-    n_cols: usize,
-    n: usize,
-    nodes: usize,
-    loo: bool,
-) -> Option<f64> {
-    use crate::config::RANK_REL_SPAN as REL_SPAN;
-    let rows: Vec<usize> = (0..n).filter(|&i| target[i].is_finite()).collect();
-    if rows.len() < 2 {
-        return None;
-    }
-    let pos = rows.iter().all(|&i| target[i] > 0.0);
-    let neg = rows.iter().all(|&i| target[i] < 0.0);
-    let lo = rows
-        .iter()
-        .map(|&i| target[i].abs())
-        .fold(f64::INFINITY, f64::min);
-    let hi = rows.iter().map(|&i| target[i].abs()).fold(0.0, f64::max);
-    if !(pos || neg) || !(hi >= REL_SPAN * lo) {
-        return None;
-    }
-    let preds: Vec<Option<f64>> = if loo {
-        loo_refit_predictions(model, features, target, n_cols, n)?
-    } else {
-        let ast = crate::forms::ast::parse(model).ok()?;
-        let cols: Vec<Vec<f64>> = features.iter().map(|c| c[..n].to_vec()).collect();
-        (0..n)
-            .map(|i| Some(ast.eval(&cols, i)).filter(|p| p.is_finite()))
-            .collect()
-    };
-    let mut s = 0.0f64;
-    for &i in &rows {
-        let Some(p) = preds[i] else {
-            return Some(f64::INFINITY);
-        };
-        s += ((target[i] - p) / target[i]).powi(2);
-    }
-    let k = rows.len() as f64;
-    Some(0.5 * k * (s / k).max(1e-30).ln() + 0.5 * k.ln() * nodes as f64)
-}
-
 pub(crate) fn largest_miss(
     model: &str,
     features: &[Vec<f64>],
@@ -684,4 +640,201 @@ pub(crate) fn largest_miss(
         }
     }
     best
+}
+
+pub(crate) const DL_BAND: f64 = 0.5;
+
+const DL_ROWS: usize = 256;
+
+pub(crate) fn description_length(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+) -> Option<f64> {
+    let parsed = crate::Parser::parse(model).ok()?;
+    let nodes = parsed.node_count() as f64;
+    let free = free_constants(model).unwrap_or_else(|| all_constants(model).unwrap_or(0)) as f64;
+    let ast = crate::forms::ast::parse(model).ok()?;
+    let rows: Vec<usize> = (0..n).filter(|&i| target[i].is_finite()).collect();
+    let rows: Vec<usize> = if rows.len() > DL_ROWS {
+        (0..DL_ROWS)
+            .map(|k| rows[k * rows.len() / DL_ROWS])
+            .collect()
+    } else {
+        rows
+    };
+    let m = rows.len();
+    if m < 2 {
+        return None;
+    }
+    let cols: Vec<Vec<f64>> = features
+        .iter()
+        .map(|c| rows.iter().map(|&i| c[i]).collect())
+        .collect();
+    let y: Vec<f64> = rows.iter().map(|&i| target[i]).collect();
+    let p: Vec<f64> = (0..m).map(|k| ast.eval(&cols, k)).collect();
+    let undefined = p.iter().filter(|v| !v.is_finite()).count() as f64 * CELL_NLL_CAP;
+    let defined: Vec<usize> = (0..m).filter(|&k| p[k].is_finite()).collect();
+    if defined.len() < 2 {
+        return None;
+    }
+    let (qy, u) = QUANTA.with(|q| {
+        let q = q.borrow();
+        let qy: Vec<f64> = rows
+            .iter()
+            .map(|&i| q.1.get(i).copied().unwrap_or(0.0))
+            .collect();
+        let qf: Vec<Vec<f64>> =
+            q.0.iter()
+                .map(|c| {
+                    rows.iter()
+                        .map(|&i| c.get(i).copied().unwrap_or(0.0))
+                        .collect()
+                })
+                .collect();
+        let mut ev = crate::Evaluator::new(2, m);
+        let u: Vec<f64> = crate::math::rounding_var_rows(model, &cols, &qf, &qy, m, &mut ev)
+            .map(|v| {
+                v.iter()
+                    .zip(&qy)
+                    .map(|(v, q)| (v - q * q / 12.0).max(0.0))
+                    .collect()
+            })
+            .unwrap_or_else(|| vec![0.0; m]);
+        (qy, u)
+    });
+    let mean = y.iter().sum::<f64>() / m as f64;
+    let sd = (y.iter().map(|v| (v - mean) * (v - mean)).sum::<f64>() / m as f64).sqrt();
+    let tau2: Vec<f64> = (0..m)
+        .map(|k| (1e-13 * y[k].abs().max(p[k].abs())).powi(2))
+        .collect();
+    let rows_cost = |readings: bool, s2: f64, relative: bool| -> f64 {
+        undefined
+            + defined
+                .iter()
+                .map(|&k| {
+                    let extra = if relative { s2 * p[k] * p[k] } else { s2 };
+                    let var = if readings { u[k] } else { 0.0 } + extra + tau2[k];
+                    cell_nll(y[k] - p[k], qy[k], var.sqrt())
+                })
+                .sum::<f64>()
+    };
+    let half_ln = 0.5 * (m as f64).ln();
+    let readings_differ = u.iter().any(|v| *v > 0.0);
+    let nd = defined.len() as f64;
+    let mut best = f64::INFINITY;
+    for readings in [false, true] {
+        if readings && !readings_differ {
+            continue;
+        }
+        best = best.min(rows_cost(readings, 0.0, false));
+        let allowed = |k: usize| (if readings { u[k] } else { 0.0 } + qy[k] * qy[k] / 12.0);
+        let additive = defined
+            .iter()
+            .map(|&k| (y[k] - p[k]).powi(2) - allowed(k))
+            .sum::<f64>()
+            / nd;
+        let relative = defined
+            .iter()
+            .filter(|&&k| p[k] != 0.0)
+            .map(|&k| ((y[k] - p[k]).powi(2) - allowed(k)) / (p[k] * p[k]))
+            .sum::<f64>()
+            / nd;
+        for (s2, rel) in [(additive, false), (relative, true)] {
+            if s2 > 0.0 && s2.is_finite() && sd > 0.0 {
+                best = best.min(rows_cost(readings, s2, rel) + half_ln);
+            }
+        }
+    }
+    Some(best + half_ln * (nodes + free))
+}
+
+thread_local! {
+    static DL_CACHE : std::cell::RefCell < std::collections::HashMap < String, f64 >> =
+    std::cell::RefCell::new(std::collections::HashMap::new());
+}
+
+fn clear_dl_cache() {
+    DL_CACHE.with(|c| c.borrow_mut().clear());
+}
+
+pub(crate) fn cached_dl(model: &str, features: &[Vec<f64>], target: &[f64], n: usize) -> f64 {
+    let key = format!("{}|{}", n, model);
+    if let Some(v) = DL_CACHE.with(|c| c.borrow().get(&key).copied()) {
+        return v;
+    }
+    let v = description_length(model, features, target, n).unwrap_or(f64::INFINITY);
+    DL_CACHE.with(|c| c.borrow_mut().insert(key, v));
+    v
+}
+
+const CELL_NLL_CAP: f64 = 700.0;
+
+fn cell_nll(r: f64, q: f64, sigma: f64) -> f64 {
+    const CAP: f64 = CELL_NLL_CAP;
+    if !(sigma > 0.0) {
+        return if r.abs() <= q / 2.0 { 0.0 } else { CAP };
+    }
+    let z = r.abs() / sigma;
+    let ln_sqrt_2pi = 0.5 * (2.0 * std::f64::consts::PI).ln();
+    if q < 1e-3 * sigma {
+        let width = if q > 0.0 {
+            (sigma / q).ln()
+        } else {
+            sigma.ln()
+        };
+        return (0.5 * z * z + ln_sqrt_2pi + width).min(CAP);
+    }
+    let (a, b) = ((r.abs() - q / 2.0) / sigma, (r.abs() + q / 2.0) / sigma);
+    let pr = upper_tail(a) - upper_tail(b);
+    if pr > 1e-300 && pr.is_finite() {
+        return (-pr.ln()).min(CAP);
+    }
+    (0.5 * a * a + ln_sqrt_2pi + (sigma / q).ln().max(0.0)).min(CAP)
+}
+
+fn upper_tail(x: f64) -> f64 {
+    let z = (x / std::f64::consts::SQRT_2).abs();
+    let t = 1.0 / (1.0 + 0.5 * z);
+    let erfc = t
+        * (-z * z - 1.26551223
+            + t * (1.00002368
+                + t * (0.37409196
+                    + t * (0.09678418
+                        + t * (-0.18628806
+                            + t * (0.27886807
+                                + t * (-1.13520398
+                                    + t * (1.48851587 + t * (-0.82215223 + t * 0.17087277)))))))))
+            .exp();
+    let q = 0.5 * erfc;
+    if x >= 0.0 {
+        q
+    } else {
+        1.0 - q
+    }
+}
+
+pub(crate) fn snap_choice(
+    e: &crate::forms::nf::Expr,
+    opts: &[crate::forms::nf::Fitted],
+    features: &[Vec<f64>],
+    target: &[f64],
+    n: usize,
+) -> usize {
+    let dls: Vec<f64> = opts
+        .iter()
+        .map(|f| cached_dl(&crate::forms::nf::print_answer(e, f), features, target, n))
+        .collect();
+    let min = dls.iter().cloned().fold(f64::INFINITY, f64::min);
+    if !min.is_finite() {
+        return 0;
+    }
+    let free = |k: usize| {
+        free_constants(&crate::forms::nf::print_answer(e, &opts[k])).unwrap_or(usize::MAX)
+    };
+    (0..opts.len())
+        .filter(|&k| dls[k] <= min + DL_BAND)
+        .min_by_key(|&k| (free(k), usize::from(k == 0), k))
+        .unwrap_or(0)
 }

@@ -63,7 +63,8 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
   verdict       this answer's verdict
   r2            R^2 of model evaluated on every row (null when the
                 target is constant)
-  holdout_r2    R^2 on the held-out rows, or the leave-one-out R^2
+  holdout_r2    the score the verdict reads: R^2 on the held-out rows,
+                or the leave-one-out R^2
   search_r2     the search's internal score (diagnostic only)
   free_constants  constants read off the data (an exact answer does not
                 count integers, small fractions and multiples of pi, e,
@@ -76,10 +77,11 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
                 expr meaning column columns[j-1] (0-based)
 
   Answers are ordered by verdict (exact, approximate, no law found);
-  within a verdict, below 80 rows exact answers by fewest free constants
-  then shortest and the rest by description length, from 80 rows by
-  description length on the held-out rows. Ranking uses the validation
-  score, so a lower answer can have the higher r2.
+  within a verdict by description length: the cost of the target's
+  cells given the answer (the cells' written precision and any extra
+  noise) plus the answer's nodes and free constants. The same criterion
+  chooses snapped constants and whether a term stays, so a lower answer
+  can have the higher r2.
 
 VERDICTS:
   exact         fits to the precision the cells are written to (to

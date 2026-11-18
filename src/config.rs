@@ -446,16 +446,3 @@ pub(crate) const WIDE_COLUMNS: usize = 20;
 /// 45, where no law was found, and at 10,000 columns it took 17 GB before
 /// its first division was scored.
 pub(crate) const SCREEN_COLUMNS: usize = 30;
-
-/// Approximate answers are ranked on relative residuals when the target has
-/// one sign and spans at least this factor (guard::relative_dl): there r² is
-/// set by the largest values. Lower than REL_SPAN, which decides exactness,
-/// because a ranking only orders answers the verdict has already judged.
-pub(crate) const RANK_REL_SPAN: f64 = 100.0;
-
-/// Approximate answers are re-ranked on relative residuals only when the
-/// first of them misses some row by more than this fraction of its value
-/// (a form bent to the largest values; the review's planets missed Mercury
-/// by 11%). Below it the absolute order stands: an offset fitted absolutely
-/// costs a few percent on small rows without making the answer worse.
-pub(crate) const RANK_MISS_REL: f64 = 0.05;

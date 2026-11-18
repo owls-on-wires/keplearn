@@ -104,7 +104,7 @@ $ ./keplearn --target T_years --format summary < examples/planets_2_digits.tsv
 T_years = a_AU**(3/2)                             exact (r2 = 0.9990, 9 rows)
 constants: none free
 data: 9 rows, 1 column; rounding floor 5.3e-4 of the target's variance
-next best: T_years = (3/sqrt(2))*a_AU + 0.11*a_AU**2    approximate
+next best: T_years = (3/pi)*exp((2/3**(1/4))*log(a_AU))    approximate
 note: the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly
 ```
 
@@ -118,11 +118,11 @@ Noise beyond the data's written precision is reported as approximate:
 
 ```sh
 $ ./keplearn --target P_kPa --format summary < examples/gas_1pct_noise.tsv
-P_kPa = 8.3*T_K/V_L                               approximate (r2 = 0.9992, 441 rows)
+P_kPa = 8.31*T_K/V_L                              approximate (r2 = 0.9992, 441 rows)
 constants: 1 free
-why not exact: the best fit leaves residuals above the precision the cells are written to; its largest miss is 3.55% of the target's value (where the target is 132.01)
+why not exact: the best fit leaves residuals above the precision the cells are written to; its largest miss is 3.44% of the target's value (where the target is 132.01)
 data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
-next best: P_kPa = 13.079*T_K - 8.327*T_K*arctan(V_L)    approximate
+next best: P_kPa = 13.0794*T_K - 8.3266*T_K*arctan(V_L)    approximate
 ```
 
 The default output is one JSON object (schema `keplearn.result.v2`), the
@@ -206,10 +206,14 @@ digits written in each column sets a rounding floor, the error those
 digits alone imply through the candidate law; an answer is exact when its
 residuals are within that floor, every row fits to its own precision when
 the target spans orders of magnitude, its constants are not tuned to
-cancel, and the table has more rows than its constants need. Below 80
-rows, answers are ranked exact first (fewest free constants, then
-shortest), then by description length; from 80 rows, by description
-length on the held-out rows.
+cancel, and the table has more rows than its constants need.
+
+Where the data allow more than one answer (which value a constant snaps
+to, whether a term stays, which answer comes first), one description
+length decides: the cost of the target's cells given the answer, judged
+against the precision they are written to, plus the cost of the answer's
+nodes and free constants. Answers are listed exact first, then
+approximate, each by that criterion.
 
 The `--timeout` budget is split: the search uses 80% of it and the
 answers are assembled in the rest. The heap is bounded by `--max-memory`:

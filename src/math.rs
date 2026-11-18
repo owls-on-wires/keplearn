@@ -217,7 +217,7 @@ pub(crate) fn mdl_dl(hn_f: f64, rh: f64, nodes: f64) -> f64 {
     0.5 * hn_f * (1.0 - rh).max(1e-12).ln() + 0.5 * hn_f.ln() * nodes
 }
 
-pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64, f64) {
+pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64) {
     let (r0, a0, b0) = r2_score(tyt, typ);
     let n = tyt.len().min(typ.len());
     let mut resid: Vec<(f64, usize)> = Vec::with_capacity(n);
@@ -228,8 +228,9 @@ pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64, f64) {
         }
     }
     let m = resid.len();
+    let all = (r0, plain_r2(tyt, typ));
     if m < OUTLIER_TRIM_MIN_M {
-        return (r0, a0, b0);
+        return all;
     }
     let mut mags: Vec<f64> = resid.iter().map(|x| x.0).collect();
     let mid = mags.len() / 2;
@@ -242,7 +243,7 @@ pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64, f64) {
         ndrop += 1;
     }
     if ndrop == 0 {
-        return (r0, a0, b0);
+        return all;
     }
     let mut kt: Vec<f64> = Vec::with_capacity(m - ndrop);
     let mut kp: Vec<f64> = Vec::with_capacity(m - ndrop);
@@ -250,11 +251,11 @@ pub(crate) fn leverage_trimmed_r2(tyt: &[f64], typ: &[f64]) -> (f64, f64, f64) {
         kt.push(tyt[i]);
         kp.push(typ[i]);
     }
-    let (r1, a1, b1) = r2_score(&kt, &kp);
+    let (r1, _, _) = r2_score(&kt, &kp);
     if r1 >= r0 {
-        (r1, a1, b1)
+        (r1, plain_r2(&kt, &kp))
     } else {
-        (r0, a0, b0)
+        all
     }
 }
 
@@ -292,7 +293,7 @@ pub(crate) fn holdout_model_r2(
     if tyt.len() < ho_min_rows {
         return None;
     }
-    let (rh, _, _) = leverage_trimmed_r2(&tyt, &typ);
+    let (rh, _) = leverage_trimmed_r2(&tyt, &typ);
     if rh.is_finite() {
         Some((rh, tyt.len()))
     } else {

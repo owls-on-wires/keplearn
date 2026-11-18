@@ -776,7 +776,7 @@ fn eval_arg(a: &Arg, cols: &[Vec<f64>], r: usize, inner: &[f64], c: &mut usize) 
     scale * s + shift
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub struct Fitted {
     pub coef: Vec<f64>,
     pub offset: f64,

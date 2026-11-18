@@ -1351,21 +1351,70 @@ fn a_named_constant_is_tried_before_a_longer_fraction() {
                 )
             })
             .collect::<String>();
-    let mut cfg = test_cfg();
-    cfg.target_col = "T".to_string();
-    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    for reversed in [false, true] {
+        crate::forms::search::REVERSED_ORDER.with(|r| r.set(reversed));
+        let mut cfg = test_cfg();
+        cfg.target_col = "T".to_string();
+        let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+        crate::forms::search::REVERSED_ORDER.with(|r| r.set(false));
+        let top = j
+            .get("results")
+            .and_then(|r| r.as_arr())
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap();
+        assert!(
+            top.get("symbolic")
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .contains("2*pi"),
+            "reversed {}: {:?}",
+            reversed,
+            top.get("model")
+        );
+    }
+}
+
+#[test]
+fn integer_written_laws_keep_their_offsets() {
+    let t = "x,y\n1,3\n2,5\n3,7\n4,9\n5,11\n6,13\n7,15\n8,17\n";
+    let (m, _, v) = top_and_verdict(t);
+    assert_eq!((m.as_str(), v.as_str()), ("2*x1 + 1", "exact"));
+    let j = run_json(t);
     let top = j
         .get("results")
         .and_then(|r| r.as_arr())
         .and_then(|r| r.first())
         .cloned()
         .unwrap();
+    assert_eq!(top.get("holdout_r2").and_then(|v| v.as_f64()), Some(1.0));
+    let mut s = 71u64;
+    let t: String = "a,b,y\n".to_string()
+        + &(0..30)
+            .map(|_| {
+                let (a, b) = (
+                    1 + (9.0 * lcg(&mut s)) as i64,
+                    1 + (9.0 * lcg(&mut s)) as i64,
+                );
+                format!("{},{},{}\n", a, b, a * b + 3)
+            })
+            .collect::<String>();
+    let (m, _, v) = top_and_verdict(&t);
+    assert_eq!((m.as_str(), v.as_str()), ("x1*x2 + 3", "exact"));
+}
+
+#[test]
+fn rows_short_of_the_header_are_named_as_such() {
+    let t = "a\tb\ttarget\n0\t0\n1\t2\n2\t4\n3\t6\n4\t8\n5\t10\n";
+    let e = run_text(t, {
+        let mut c = test_cfg();
+        c.target_col = "target".to_string();
+        c
+    })
+    .unwrap_err();
     assert!(
-        top.get("symbolic")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .contains("2*pi"),
-        "{:?}",
-        top.get("model")
+        e.contains("no data row has the header's 3 fields (most rows have 2)"),
+        "{}",
+        e
     );
 }
