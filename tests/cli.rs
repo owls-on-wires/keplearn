@@ -55,3 +55,17 @@ fn reaching_the_memory_limit_exits_with_status_3() {
     assert!(out.is_empty());
     assert!(err.contains("--max-memory 1 MB"), "{}", err);
 }
+
+#[test]
+fn every_warning_of_the_result_is_printed_on_stderr() {
+    let table = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/examples/planets_2_digits.tsv"
+    ))
+    .unwrap();
+    let (code, out, err) = run(&["--target", "T_years"], &table);
+    assert_eq!(code, 0);
+    let note = "the exact verdict takes the feature columns as rounded";
+    assert!(out.contains(note), "{}", out);
+    assert!(err.contains(&format!("keplearn: {}", note)), "{}", err);
+}

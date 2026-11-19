@@ -49,7 +49,7 @@ pub(crate) fn written_cost(v: f64) -> usize {
 
 pub(crate) const UNWRITTEN_COST: usize = 13;
 
-fn nice_near_costed(v: f64) -> Vec<(usize, f64)> {
+pub(crate) fn nice_near_costed(v: f64) -> Vec<(usize, f64)> {
     fn digits(k: f64) -> usize {
         let mut k = k.abs().round() as u64;
         if k == 0 {
@@ -87,7 +87,7 @@ fn nice_near_costed(v: f64) -> Vec<(usize, f64)> {
                         .any(|&(p, q)| p == num.abs() && q == den);
                 if num != 0.0 && num.abs() <= crate::forms::nf::SNAP_MULT_MAX && admitted {
                     out.push((
-                        digits(num) + den_cost(den) + 1,
+                        digits(num) + den_cost(den) + 1 + usize::from(k.abs() != 1.0),
                         (num / den as f64 * b - v).abs(),
                         num / den as f64 * b,
                     ));

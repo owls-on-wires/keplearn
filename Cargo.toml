@@ -1,6 +1,6 @@
 [package]
 name = "keplearn"
-version = "1.3.2"
+version = "1.3.3"
 edition = "2021"
 description = "Deterministic symbolic regression: closed-form laws from tables of measurements"
 license = "MIT"

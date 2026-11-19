@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.3.2, result schema `keplearn.result.v2`.
+Version 1.3.3, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -147,7 +147,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.2`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.3`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -428,8 +428,8 @@ are nearly equal and the two fits agree.
 A simple value near a constant is admitted when the fit stays within a
 tolerance:
 
-- on an exact fit, a relative 1e-13 or the rounding floor, whichever is
-  larger;
+- on an exact fit, a loss of 1e-13 of R² or the rounding floor,
+  whichever is larger;
 - otherwise, one standard error of the fitted value.
 
 Admitted values: zero; decimals of one to six significant digits and
@@ -439,23 +439,38 @@ fitted value and every admitted one, the
 [selection criterion](#the-selection-criterion) chooses: the value it
 scores lowest, or, among the values within half a nat of that, the one
 that takes the fewest digits to write (the numerator's significant
-digits, the denominator's when it is not 1, and one for a named
-constant). A fitted 6.285 on a two-digit pendulum becomes `2*pi`, which
-is structural and fits the rows better, not `19/3`, which the rounding
-floor also admits. Being snapped does not make a constant structural: a
-snapped 115 is still a free constant.
+digits, the denominator's when it is not 1, one for a named constant,
+and one for a power of it other than ±1: `pi` and `2*pi` take two,
+`7*2**(1/4)` and `1/sqrt(2*pi)` three). A fitted 6.285 on a two-digit
+pendulum becomes `2*pi`, which is structural and fits the rows better,
+not `19/3`, which the rounding floor also admits. On an exact fit at the
+full-precision tolerance the simplest admitted value is taken without
+the criterion, which there would weigh misses of a few 1e-14 and take
+offsets of that size; so 6.62607015e-34 on cells written to sixteen
+digits becomes 6.62607e-34, which moves R² by 1e-15. Being snapped does
+not make a constant structural: a snapped 115 is still a free constant.
 
 A named or fractional value counts as structural only when the data
 single it out. Naming one of k values that fit equally well costs about
 ln k nats, which the credit for a structural constant does not pay for.
-So a snapped value is withdrawn when another candidate that takes no
-more digits to write fits within half a nat of it, on the data alone
-(the criterion without that credit). The constant then stays a decimal
-and counts as free. Planets typed to two digits support 0.199 as well as
-`5/(8*pi)`, so the answer is written `0.199*a**(3/2)` (or the shorter
-0.2 where it fits), with the constant free. A fitted 1.0104 on 5% noise is
-written 1.01, not `7/(4*sqrt(3))`. A two-digit pendulum keeps `2*pi`
-because no value as short fits as well.
+So a snapped value is withdrawn when another value that takes no more
+digits to write fits within half a nat of it, on the data alone (the
+criterion without that credit). The values tried are the other
+candidates that write one of its structural constants otherwise and,
+for each structural constant, the two nearest values as short to write
+put in its place. The constant then stays a decimal
+and counts as free. On a gas law at 1% noise the data's best constant
+is 8.3244, which is `7*2**(1/4)`; 8.32, as short, fits as well, so the
+answer is written with a decimal. A Gaussian density written to four
+digits keeps `1/sqrt(2*pi)`; written to three, 0.399 fits as well and
+is written instead. A value is named, then, only where no decimal as
+short fits as well: a slope of 2.72 written to three digits is
+indistinguishable from `e`, which is shorter, and is written `e`.
+Planets typed to two digits support 0.199 as well as `5/(8*pi)`, so the
+answer is written `0.199*a**(3/2)` (or the shorter 0.2 where it fits),
+with the constant free. A fitted 1.0104 on 5% noise is written 1.01, not
+`7/(4*sqrt(3))`. A two-digit pendulum keeps `2*pi` because no value as
+short fits as well.
 
 Constants are first snapped one at a time. An answer short of exact then
 has its constants chosen together: each constant inside a function takes
@@ -469,7 +484,8 @@ tolerance, is offered to the criterion alongside the answer as it
 stands (at most 27 inner and 64 outer combinations). On an answer short
 of exact a combination must also write fewer constants (a scale of 1, an
 offset of 0): there a snapped value only rounds a fitted one, so 8.31
-on a gas law at 1% noise stays 8.31 rather than becoming `7*2**(1/4)`,
+on a gas law at 1% noise stays 8.31 rather than becoming `7*2**(1/4)`
+in a joint choice,
 which the tolerance also admits. The tolerance here
 is widened to what the criterion could pay for: moving a constant by z
 standard errors costs about z²/2 nats and making it structural saves
@@ -573,11 +589,15 @@ program holds, counted at every allocation:
   status 3 and a message on stderr, and nothing on stdout.
 
 The count is of the bytes the program asks for; the process's resident
-memory runs somewhat above it (the allocator's own overhead). Most tables
-stay in tens of megabytes. The sum-of-terms step holds up to two sets of
-4,000 prepared library terms, about 128 MB each, on tables of many
-columns: measured at 30 searched columns, 170 to 190 MB on 50- and
-200-row tables and 430 MB on a 35-column table screened to 30.
+memory runs somewhat above it (the allocator's own overhead). A table
+whose law is found early stays in tens of megabytes (13 MB for a clean
+three-column law on 60 rows). A search that runs to its budget fills
+the library of prepared terms: measured peaks are 185 to 190 MB on
+100- and 120-row tables of three columns (noisy or unrelated), 435 MB
+on 1,000 rows of five columns, and 170 to 190 MB at 30 searched columns
+on 50 and 200 rows. The sum-of-terms step holds up to two sets of 4,000
+prepared library terms, about 128 MB each, on tables of many columns;
+a 35-column table screened to 30 measured 430 MB.
 
 An exact answer ends the search early (`stopped_by: exact_exit`) when its
 canonical form is exact, reduced, holds on the rows at the edges of the

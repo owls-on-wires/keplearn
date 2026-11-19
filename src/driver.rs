@@ -661,6 +661,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 )
             }
         };
+        for w in &warnings[ingest_warnings.len().min(warnings.len())..] {
+            eprintln!("keplearn: {}", w);
+        }
         let oj = crate::output::Envelope {
             results,
             verdict,
@@ -714,6 +717,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             named: crate::output::named_model(&model, &names),
             free_constants: Some(0),
         };
+        for w in &warnings[ingest_warnings.len().min(warnings.len())..] {
+            eprintln!("keplearn: {}", w);
+        }
         let oj = crate::output::Envelope {
             results: vec![r],
             verdict: "exact",
@@ -1803,6 +1809,9 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 "the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly"
                     .to_string(),
             );
+    }
+    for w in &warnings[ingest_warnings.len().min(warnings.len())..] {
+        eprintln!("keplearn: {}", w);
     }
     let oj = crate::output::Envelope {
         results,

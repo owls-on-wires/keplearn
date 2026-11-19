@@ -899,6 +899,8 @@ pub(crate) fn cached_dl(model: &str, features: &[Vec<f64>], target: &[f64], n: u
 
 const CELL_NLL_CAP: f64 = 700.0;
 
+const SINGLED_OUT_RIVALS: usize = 2;
+
 const WEIGHT_RANGE_MAX: f64 = 1e6;
 
 const NOISE_GRID_DECADES: usize = 8;
@@ -1013,23 +1015,70 @@ pub(crate) fn snap_choice(
     };
     let credited = |k: usize| free(k) < written_count(k);
     let same = |a: f64, b: f64| (a - b).abs() <= 1e-9 * a.abs().max(b.abs());
-    let differs = |a: &crate::forms::nf::Fitted, b: &crate::forms::nf::Fitted| {
-        !same(a.offset, b.offset)
-            || a.coef.iter().zip(&b.coef).any(|(x, y)| !same(*x, *y))
-            || a.inner.iter().zip(&b.inner).any(|(x, y)| !same(*x, *y))
+    let differs = |a: &crate::forms::nf::Fitted, k: &crate::forms::nf::Fitted| {
+        let st = |v: f64| structural_constant(v);
+        (k.offset != 0.0 && st(k.offset) && !same(a.offset, k.offset))
+            || a.coef
+                .iter()
+                .zip(&k.coef)
+                .any(|(x, y)| *y != 1.0 && st(*y) && !same(*x, *y))
+            || a.inner
+                .iter()
+                .zip(&k.inner)
+                .any(|(x, y)| st(*y) && !same(*x, *y))
+    };
+    let near_rival = |k: usize, dk: f64| -> bool {
+        let f = &opts[k];
+        let slots = f.coef.len() + 1 + f.inner.len();
+        (0..slots).any(|s| {
+            let v = if s < f.coef.len() {
+                f.coef[s]
+            } else if s == f.coef.len() {
+                f.offset
+            } else {
+                f.inner[s - f.coef.len() - 1]
+            };
+            if v == 0.0 || v.abs() == 1.0 || !structural_constant(v) {
+                return false;
+            }
+            let w = crate::forms::search::written_cost(v);
+            let mut vals: Vec<f64> = crate::forms::search::nice_near_costed(v)
+                .into_iter()
+                .filter(|&(c, r)| c <= w && r != 0.0 && !same(r, v))
+                .map(|(_, r)| r)
+                .collect();
+            vals.sort_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()));
+            vals.dedup();
+            vals.into_iter().take(SINGLED_OUT_RIVALS).any(|r| {
+                let mut g = f.clone();
+                if s < g.coef.len() {
+                    g.coef[s] = r;
+                } else if s == g.coef.len() {
+                    g.offset = r;
+                } else {
+                    g.inner[s - f.coef.len() - 1] = r;
+                }
+                let ans = crate::forms::nf::print_answer(e, &g);
+                let d = cached_dl(&ans, features, target, n);
+                let Some(fr) = free_constants(&ans) else {
+                    return false;
+                };
+                d.is_finite() && d + half_ln * (written_count(k) as f64 - fr as f64) <= dk + DL_BAND
+            })
+        })
     };
     let singled_out = |k: usize| {
         if k == 0 || !credited(k) {
             return true;
         }
         let (dk, ck) = (data(k), cost(k));
-        !(0..opts.len()).any(|j| {
+        !((0..opts.len()).any(|j| {
             j != k
                 && dls[j] <= dk + DL_BAND
                 && differs(&opts[j], &opts[k])
                 && data(j) <= dk + DL_BAND
                 && cost(j) <= ck
-        })
+        }) || near_rival(k, dk))
     };
     let mut order: Vec<usize> = (0..opts.len()).filter(|&k| dls[k].is_finite()).collect();
     order.sort_by(|&a, &b| dls[a].total_cmp(&dls[b]).then(a.cmp(&b)));

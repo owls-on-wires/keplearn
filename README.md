@@ -104,7 +104,7 @@ $ ./keplearn --target T_years --format summary < examples/planets_2_digits.tsv
 T_years = a_AU**(3/2)                             exact (r2 = 0.9990, 9 rows)
 constants: none free
 data: 9 rows, 1 column; rounding floor 5.3e-4 of the target's variance
-next best: T_years = (5/(3*sqrt(3)))*exp((7*sqrt(3)/8)*log(a_AU))    approximate
+next best: T_years = 0.93*exp(1.525*log(a_AU))    approximate
 note: the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly
 ```
 

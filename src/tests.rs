@@ -1520,3 +1520,83 @@ fn an_offset_and_a_scale_are_snapped_together() {
     );
     assert_eq!(top.get("verdict").and_then(|v| v.as_str()), Some("exact"));
 }
+
+fn top_of(table: &str) -> (String, String, String) {
+    let j = run_json(table);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    let s = |k: &str| {
+        top.get(k)
+            .and_then(|v| v.as_str())
+            .unwrap_or("")
+            .to_string()
+    };
+    (s("model"), s("named"), s("verdict"))
+}
+
+#[test]
+fn a_named_value_needs_more_than_noise_to_be_named() {
+    let mut s = 3u64;
+    let mut gauss = move || {
+        let (u, v) = (lcg(&mut s).max(1e-12), lcg(&mut s));
+        (-2.0 * u.ln()).sqrt() * (2.0 * std::f64::consts::PI * v).cos()
+    };
+    let mut s2 = 5u64;
+    let c = 7.0 * 2f64.powf(0.25);
+    let t: String = "n,t,v,y\n".to_string()
+        + &(0..200)
+            .map(|_| {
+                let (n, tk, v) = (
+                    0.5 + 2.5 * lcg(&mut s2),
+                    250.0 + 150.0 * lcg(&mut s2),
+                    1.0 + 9.0 * lcg(&mut s2),
+                );
+                format!(
+                    "{},{},{},{}\n",
+                    sig_g(n, 6),
+                    sig_g(tk, 6),
+                    sig_g(v, 6),
+                    sig_g(c * n * tk / v * (1.0 + 0.01 * gauss()), 6)
+                )
+            })
+            .collect::<String>();
+    let (_, named, _) = top_of(&t);
+    assert!(!named.contains("**(1/4)"), "{}", named);
+}
+
+#[test]
+fn a_named_constant_the_data_single_out_is_named() {
+    let mut s = 9u64;
+    let t: String = "x,y\n".to_string()
+        + &(0..60)
+            .map(|_| {
+                let x = 0.5 + 3.5 * lcg(&mut s);
+                format!(
+                    "{},{}\n",
+                    sig_g(x, 4),
+                    sig_g(
+                        (-x * x / 2.0).exp() / (2.0 * std::f64::consts::PI).sqrt(),
+                        4
+                    )
+                )
+            })
+            .collect::<String>();
+    let (_, named, verdict) = top_of(&t);
+    assert!(named.contains("sqrt(2*pi)"), "{}", named);
+    assert_eq!(verdict, "exact");
+}
+
+#[test]
+fn a_withdrawn_name_leaves_the_law_with_a_decimal() {
+    let t = std::fs::read_to_string(concat!(
+        env!("CARGO_MANIFEST_DIR"),
+        "/fixtures/channel_capacity_r3.tsv"
+    ))
+    .unwrap();
+    let (model, named, _) = top_of(&t);
+    assert!(model.ends_with("*log(x1/x2 + 1)"), "{} ({})", model, named);
+}

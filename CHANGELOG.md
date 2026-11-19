@@ -1,5 +1,31 @@
 # Changelog
 
+## 1.3.3
+
+- A named value is written only where no decimal as short to write fits
+  as well. Its written cost now counts its power: `pi` and `2*pi` take
+  two, `7*2**(1/4)` and `1/sqrt(2*pi)` three (the multiplier, the name,
+  the power), like a three-digit decimal. The test that withdraws a
+  structural value no longer depends on which decimals the snap happened
+  to offer: the two nearest values as short to write are put in its
+  place. A gas law at 1% noise, whose best constant is 8.3244, was
+  written `(7*2**(1/4))*n*T/V` with the constant counted as structural
+  (the reference said it would not be); 8.32 fits as well, and the
+  constant is now a decimal. A Gaussian density written to four digits
+  keeps `1/sqrt(2*pi)`; written to three, it is `0.399`, which fits as
+  well. A slope of 2.72 written to three digits is still `e`, which the
+  digits cannot tell from it and which is shorter. A rival now challenges
+  a value only where it writes one of that value's structural constants
+  otherwise: on a channel capacity written to three digits, the withdrawn
+  `1/(2*log(2))*log(P/N + 1)` also withdrew `0.7214*log(P/N + 1)`, which
+  differs from it only in its free scale, and left
+  `0.72165*log(P/N + 1.0016) - 0.00111`.
+- Every warning in the result is printed on stderr. The note that an
+  exact verdict reads the features as rounded, and the note that the
+  rounding floor was not estimated, were only in `warnings`.
+- Reference: the exact-fit snap tolerance is a loss of R², not a relative
+  change of the constant; memory figures for noisy searches.
+
 ## 1.3.2
 
 - When the target's cells are written to different places (a fixed number
