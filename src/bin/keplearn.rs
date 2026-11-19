@@ -128,7 +128,23 @@ fn main() {
                 info
             );
     }));
-    let args: Vec<String> = env::args().collect();
+    let raw: Vec<std::ffi::OsString> = env::args_os().collect();
+    let mut args: Vec<String> = Vec::with_capacity(raw.len());
+    for (k, a) in raw.iter().enumerate() {
+        match a.to_str() {
+            Some(v) => args.push(v.to_string()),
+            None if k > 0 && args[k - 1] == "--target" => {
+                args.push(a.to_string_lossy().into_owned())
+            }
+            None => {
+                eprintln!(
+                    "keplearn: argument '{}' is not valid UTF-8 (see --help)",
+                    a.to_string_lossy()
+                );
+                std::process::exit(2);
+            }
+        }
+    }
     if args[1..].iter().any(|a| a == "-h" || a == "--help") {
         print!("{}", HELP);
         return;

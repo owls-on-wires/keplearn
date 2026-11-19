@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.3.3, result schema `keplearn.result.v2`.
+Version 1.3.4, result schema `keplearn.result.v2`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -102,8 +102,11 @@ their written places. The rounding model matters only to the verdicts (see [the 
 | more than 1 GiB | `input exceeds the 1024 MiB cap` |
 
 Input that is not valid UTF-8 is read with the undecodable bytes replaced
-by `�`, and a warning says so. Control characters in column names are
-escaped in error messages.
+by `�`, and a warning says so. A `--target` argument that is not valid
+UTF-8 is decoded the same way, so a name typed in the table's own
+encoding finds its column. Any other command-line argument that is not
+valid UTF-8 is refused (exit status 2). Control characters in column
+names are escaped in error messages.
 
 **Tables that are not searched.** Three cases return at once, with exit
 status 0:
@@ -147,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.3`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.4`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -340,10 +343,13 @@ settings when both hold:
   know it;
 - every feature column with written precision looks like settings: it
   is mostly written with at most 3 significant digits (0.25, 1.5, 120),
-  or it repeats on a design grid (at most half as many distinct values as
-  rows, as temperatures 273.15, 278.15, ... repeated across volumes). A
-  column of distinct six-digit values is a set of measurements however
-  precise the target.
+  or it repeats on a design grid: at most half as many distinct values as
+  rows, lying at least 2 written quanta apart (median gap), as
+  temperatures 273.15, 278.15, ... repeated across volumes. A column of
+  distinct six-digit values is a set of measurements however precise the
+  target, and so is one drawn so densely that its values repeat at their
+  written precision (a million six-digit readings in [0.5, 3] lie one
+  quantum apart).
 
 Otherwise both columns are read as rounded as written. When an answer is
 exact only under that second reading, a warning says so.

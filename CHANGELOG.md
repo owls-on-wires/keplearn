@@ -1,5 +1,20 @@
 # Changelog
 
+## 1.3.4
+
+- A `--target` argument that is not valid UTF-8 no longer panics. It is
+  decoded as the header is (undecodable bytes become `�`), so a latin-1
+  name finds its latin-1 column; any other such argument is refused with
+  exit status 2.
+- A feature column counts as a design grid (exact settings) only when its
+  repeated values also lie at least two written quanta apart. A million
+  six-digit readings in [0.5, 3] repeat because six digits run out, not
+  because they are settings; the column was read as exact, and the
+  gravity law that is exact at 200,000 rows was `approximate` at a
+  million.
+- README: the determinism bullet names the exception the reference
+  already gave (a time budget that runs out).
+
 ## 1.3.3
 
 - A named value is written only where no decimal as short to write fits

@@ -26,7 +26,8 @@ recursive reduction.
   from 5) and rounded data; noise beyond the data's written precision is
   reported as an approximate fit, not an exact law
 - Single binary, zero dependencies (fully static with the musl target)
-- Deterministic; the same input produces the same output, byte for byte
+- Deterministic; the same input produces the same output, byte for byte,
+  unless the time budget runs out (`--timeout 0` removes the budget)
 - The reported `r2` is computed from the printed equation itself
 
 Full documentation: [docs/reference.md](docs/reference.md).

@@ -111,6 +111,28 @@ fn printable(s: &str) -> String {
     out
 }
 
+pub(crate) fn design_grid(c: &[f64], q: &[f64]) -> bool {
+    let mut vq: Vec<(f64, f64)> = c.iter().zip(q).map(|(v, q)| (*v, *q)).collect();
+    vq.sort_by(|a, b| a.0.total_cmp(&b.0));
+    vq.dedup_by(|a, b| a.0 == b.0);
+    if 2 * vq.len() > c.len() || vq.len() < 2 {
+        return false;
+    }
+    let mut gaps: Vec<f64> = vq
+        .windows(2)
+        .map(|w| {
+            let qq = w[0].1.max(w[1].1);
+            if qq > 0.0 {
+                (w[1].0 - w[0].0) / qq
+            } else {
+                f64::INFINITY
+            }
+        })
+        .collect();
+    gaps.sort_by(|a, b| a.total_cmp(b));
+    gaps[gaps.len() / 2] >= GRID_MIN_GAP
+}
+
 pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     let input = input.strip_prefix('\u{feff}').unwrap_or(input);
     let head: String = input.chars().take(4096).collect();
@@ -477,7 +499,8 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     let feature_settings: Vec<bool> = s_features
         .iter()
         .zip(&features)
-        .map(|(sg, c)| {
+        .zip(&q_features)
+        .map(|((sg, c), q)| {
             let mut counts: std::collections::HashMap<usize, usize> =
                 std::collections::HashMap::new();
             for &d in sg.iter().filter(|d| **d > 0) {
@@ -487,12 +510,7 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
                 .into_iter()
                 .max_by_key(|(d, c)| (*c, *d))
                 .map_or(0, |(d, _)| d);
-            let distinct = c
-                .iter()
-                .map(|v| v.to_bits())
-                .collect::<std::collections::HashSet<_>>()
-                .len();
-            mode <= SETTING_MAX_DIGITS || 2 * distinct <= c.len()
+            mode <= SETTING_MAX_DIGITS || design_grid(c, q)
         })
         .collect();
     column_quanta(&target, &mut q_target, &s_target);

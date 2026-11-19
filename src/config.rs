@@ -426,6 +426,9 @@ pub(crate) const OFFSET_BASIS_CAP: usize = 8;
 /// most this many significant digits (0.25, 1.5, 120): a column of
 /// six-digit values is a set of measurements.
 pub(crate) const SETTING_MAX_DIGITS: usize = 3;
+/// A design grid's distinct values lie at least this many written quanta
+/// apart (median gap); densely drawn readings lie one quantum apart.
+pub(crate) const GRID_MIN_GAP: f64 = 2.0;
 
 /// A unary or square root whose output varies by less than this fraction of
 /// its mean over the rows is saturated: it acts as a constant

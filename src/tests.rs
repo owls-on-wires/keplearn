@@ -1600,3 +1600,29 @@ fn a_withdrawn_name_leaves_the_law_with_a_decimal() {
     let (model, named, _) = top_of(&t);
     assert!(model.ends_with("*log(x1/x2 + 1)"), "{} ({})", model, named);
 }
+
+#[test]
+fn readings_that_repeat_at_their_precision_are_not_a_design_grid() {
+    let mut s = 3u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        0.5 + 2.5 * ((s >> 11) as f64 / (1u64 << 53) as f64)
+    };
+    let dense: Vec<f64> = (0..600_000)
+        .map(|_| {
+            let v = next();
+            let q = if v < 1.0 { 1e-6 } else { 1e-5 };
+            (v / q).round() * q
+        })
+        .collect();
+    let q: Vec<f64> = dense
+        .iter()
+        .map(|v| if *v < 1.0 { 1e-6 } else { 1e-5 })
+        .collect();
+    assert!(!crate::driver::design_grid(&dense, &q));
+    let grid: Vec<f64> = (0..200).map(|i| 273.15 + 5.0 * (i % 20) as f64).collect();
+    let gq = vec![0.01; grid.len()];
+    assert!(crate::driver::design_grid(&grid, &gq));
+}

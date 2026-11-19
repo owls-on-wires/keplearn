@@ -69,3 +69,53 @@ fn every_warning_of_the_result_is_printed_on_stderr() {
     assert!(out.contains(note), "{}", out);
     assert!(err.contains(&format!("keplearn: {}", note)), "{}", err);
 }
+
+#[cfg(unix)]
+#[test]
+fn a_target_name_that_is_not_utf8_finds_its_column() {
+    use std::os::unix::ffi::OsStrExt;
+    let mut table = b"longueur_m\tp\xe9riode\n".to_vec();
+    for i in 1..=12 {
+        let l = 0.1 * i as f64;
+        table.extend_from_slice(
+            format!(
+                "{}\t{}\n",
+                l,
+                2.0 * std::f64::consts::PI * (l / 9.81).sqrt()
+            )
+            .as_bytes(),
+        );
+    }
+    let target = std::ffi::OsStr::from_bytes(b"p\xe9riode");
+    let mut c = Command::new(env!("CARGO_BIN_EXE_keplearn"))
+        .arg("--target")
+        .arg(target)
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(&table).unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert_eq!(
+        o.status.code(),
+        Some(0),
+        "{}",
+        String::from_utf8_lossy(&o.stderr)
+    );
+    assert!(String::from_utf8_lossy(&o.stdout).contains("sqrt(x1)"));
+    let mut c = Command::new(env!("CARGO_BIN_EXE_keplearn"))
+        .arg("--target")
+        .arg("y")
+        .arg("-o")
+        .arg(std::ffi::OsStr::from_bytes(b"\xffx.json"))
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin.take().unwrap().write_all(b"x\ty\n1\t2\n").unwrap();
+    let o = c.wait_with_output().unwrap();
+    assert_eq!(o.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&o.stderr).contains("not valid UTF-8"));
+}
