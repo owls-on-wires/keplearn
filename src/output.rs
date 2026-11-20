@@ -103,7 +103,7 @@ pub(crate) fn json_pretty(s: &str) -> String {
     out
 }
 
-pub(crate) fn symbolic_model(model: &str) -> String {
+pub(crate) fn symbolic_model(model: &str, columns: &[String]) -> String {
     let b: Vec<char> = model.chars().collect();
     let mut out = String::with_capacity(model.len());
     let mut i = 0;
@@ -137,7 +137,21 @@ pub(crate) fn symbolic_model(model: &str) -> String {
             {
                 Some(sym) if is_atomic(&sym) => out.push_str(&sym),
                 Some(sym) => out.push_str(&format!("({})", sym)),
-                None => out.push_str(&tok),
+                None => {
+                    match tok
+                        .parse::<f64>()
+                        .ok()
+                        .and_then(crate::forms::nf::physical_constant)
+                        .filter(|(_, n)| !columns.iter().any(|c| c == n))
+                    {
+                        Some((t, _)) if is_atomic(&t) => out.push_str(&t),
+                        Some((t, _)) => out.push_str(&format!("({})", t)),
+                        None => match repeating_fraction(&tok) {
+                            Some(fr) => out.push_str(&format!("({})", fr)),
+                            None => out.push_str(&tok),
+                        },
+                    }
+                }
             }
             continue;
         }
@@ -145,6 +159,29 @@ pub(crate) fn symbolic_model(model: &str) -> String {
         i += 1;
     }
     out
+}
+
+fn repeating_fraction(tok: &str) -> Option<String> {
+    let v: f64 = tok.parse().ok()?;
+    if tok.chars().filter(|c| c.is_ascii_digit()).count() < 8 || v == 0.0 {
+        return None;
+    }
+    (2..=12i64)
+        .filter(|q| {
+            let mut r = *q;
+            while r % 2 == 0 {
+                r /= 2;
+            }
+            while r % 5 == 0 {
+                r /= 5;
+            }
+            r > 1
+        })
+        .find_map(|q| {
+            let p = (v * q as f64).round();
+            (p != 0.0 && p.abs() <= 144.0 && ((p / q as f64 - v) / v).abs() <= 1e-11)
+                .then(|| format!("{}/{}", p as i64, q))
+        })
 }
 
 fn is_atomic(e: &str) -> bool {
@@ -217,9 +254,9 @@ pub(crate) fn named_model(model: &str, names: &[String]) -> String {
     out
 }
 
-pub(crate) const FLOOR_NOT_ESTIMATED: &str = "the rounding floor was not estimated: no candidate of the search fitted to r2 0.999, so the data's precision was not measured and exactness was judged at r2 1 - 1e-9";
+pub(crate) const FLOOR_NOT_ESTIMATED: &str = "the rounding floor was not estimated: no candidate of the search fitted to r2 0.999, so the data's precision was not measured and within_precision was judged at r2 1 - 1e-9";
 
-pub(crate) const SCHEMA: &str = "keplearn.result.v2";
+pub(crate) const SCHEMA: &str = "keplearn.result.v3";
 
 static VERBOSE: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
 
@@ -247,6 +284,8 @@ pub(crate) struct ResultObj {
     pub(crate) symbolic: String,
     pub(crate) named: String,
     pub(crate) free_constants: Option<usize>,
+    pub(crate) within_precision: Option<bool>,
+    pub(crate) largest_miss: Option<(f64, f64)>,
 }
 
 fn jstr(s: &str) -> String {
@@ -288,19 +327,43 @@ impl ResultObj {
             symbolic: c.clone(),
             named: c,
             free_constants: free,
+            within_precision: (verdict == "law").then_some(true),
+            largest_miss: (verdict == "law").then_some((0.0, v)),
         }
     }
 
     pub(crate) fn json(&self) -> String {
         format!(
-            "{{\"expr\":{},\"model\":{},\"r2\":{},\"search_r2\":{},\"holdout_r2\":{},\"scale\":{},\"offset\":{},\"columns\":{:?},\"uses\":[{}],\"factor\":\"direct\",\"structure\":{},\"canonical\":{},\"verdict\":\"{}\",\"symbolic\":{},\"named\":{},\"free_constants\":{}}}",
+            "{{\"expr\":{},\"model\":{},\"r2\":{},\"search_r2\":{},\"holdout_r2\":{},\"scale\":{},\"offset\":{},\"columns\":{:?},\"uses\":[{}],\"factor\":\"direct\",\"structure\":{},\"canonical\":{},\"verdict\":\"{}\",\"symbolic\":{},\"named\":{},\"free_constants\":{},\"within_precision\":{},\"largest_miss\":{},\"largest_miss_at\":{}}}",
             jstr(& self.expr), jstr(& self.model), j10(self.r2), j10(self.search_r2),
             jopt_f(self.holdout_r2), self.scale, self.offset, self.columns, self.uses
             .iter().map(| u | jstr(u)).collect::< Vec < _ >> ().join(","), jopt_s(& self
             .structure), jopt_s(& self.canonical), self.verdict, jstr(& self.symbolic),
-            jstr(& self.named), jopt_u(self.free_constants)
+            jstr(& self.named), jopt_u(self.free_constants), self.within_precision
+            .map_or("null".to_string(), | b | b.to_string()), jopt_f(self.largest_miss
+            .map(| m | m.0)), jopt_f(self.largest_miss.map(| m | m.1))
         )
     }
+}
+
+fn simpler_law(results: &[ResultObj]) -> Option<usize> {
+    let top = results.first().filter(|r| r.verdict == "law")?;
+    let free = |r: &ResultObj| r.free_constants.unwrap_or(usize::MAX);
+    (1..results.len())
+        .filter(|&i| {
+            let r = &results[i];
+            r.verdict == "law"
+                && free(r) < free(top)
+                && r.r2.is_some_and(|v| v >= crate::config::SIMPLER_MIN_R2)
+        })
+        .min_by(|&a, &b| {
+            free(&results[a]).cmp(&free(&results[b])).then(
+                results[b]
+                    .r2
+                    .unwrap_or(0.0)
+                    .total_cmp(&results[a].r2.unwrap_or(0.0)),
+            )
+        })
 }
 
 pub(crate) struct Envelope<'a> {
@@ -320,9 +383,10 @@ pub(crate) struct Envelope<'a> {
 impl Envelope<'_> {
     pub(crate) fn json(&self) -> String {
         let mut s = format!(
-            "{{\"schema\":\"{}\",\"results\":[{}],\"verdict\":\"{}\",\"reason\":{},\"stopped_by\":\"{}\",\"validation\":\"{}\",\"noise_floor\":{:e},\"names\":{{\"target\":{},\"columns\":[{}]}},\"rows\":{},\"warnings\":[{}]",
+            "{{\"schema\":\"{}\",\"results\":[{}],\"verdict\":\"{}\",\"reason\":{},\"simpler_law\":{},\"stopped_by\":\"{}\",\"validation\":\"{}\",\"noise_floor\":{:e},\"names\":{{\"target\":{},\"columns\":[{}]}},\"rows\":{},\"warnings\":[{}]",
             SCHEMA, self.results.iter().map(| r | r.json()).collect::< Vec < _ >> ()
-            .join(","), self.verdict, jopt_s(& self.reason), self.stopped_by, self
+            .join(","), self.verdict, jopt_s(& self.reason), simpler_law(& self.results)
+            .map_or("null".to_string(), | i | i.to_string()), self.stopped_by, self
             .validation, self.noise_floor, jstr(self.target), self.columns.iter().map(| c
             | jstr(c)).collect::< Vec < _ >> ().join(","), self.rows, self.warnings
             .iter().map(| w | jstr(w)).collect::< Vec < _ >> ().join(",")

@@ -1,5 +1,85 @@
 # Changelog
 
+## 2.0.0
+
+Keplearn is a quick check for a clean law: feed it a table, get the law
+written cleanly when one fits reasonably well, otherwise no law. Every
+table is taken as measured data, noisy or rounded.
+
+- **Two verdicts: `law` and `no law found`** (schema
+  `keplearn.result.v3`). `exact` and `approximate` are gone; whether a
+  law fits to the precision the cells are written to is reported on the
+  answer as `within_precision`, with its `largest_miss` (a fraction of
+  the target's value) and `largest_miss_at`. Answers within precision
+  are still listed first. `reason` is set only when no law is found. The
+  summary's `why not exact` line is replaced by a `fit` line on every
+  law.
+- **Clean constants.** A fitted constant within 0.1% of a simple value
+  (one or two significant digits, or a fraction p/q with |p|, q ≤ 12)
+  takes it, and an offset or a term under 0.1% of the target's mean size
+  is dropped; scales and the offset are refitted when a constant inside
+  a function moves, and the answer is normalized again. Eight planets as
+  NASA lists them gave `exp(1.49978538784*log(a_AU))` first, with
+  `0.9994*a_AU**(3/2) + 0.00047` second; both are now `a_AU**(3/2)`
+  (r2 0.99999953, largest miss 0.10%).
+- **A law fits reasonably well:** its r² on every row is at least 0.9,
+  or, for a target of one sign, its median miss is within 5% of the
+  target's value (a target that barely moves has a low r² under small
+  noise). The 1930 stopping distances (r² 0.63, misses up to 89%) were an
+  approximate law and are now no law, with the best fit shown.
+- **Common constants by name.** A fitted value within three standard
+  errors of pi, 2*pi, 4*pi, their reciprocals and halves, e, sqrt(2),
+  sqrt(3), log(2) or sqrt(2*pi) is written by name: thirty pendulum swings
+  with 1% noise gave `6.3*sqrt(L)/sqrt(g)`, now `(2*pi)*sqrt(L)/sqrt(g)`.
+  Physical constants in SI units (CODATA 2018: c, G, h, hbar, q_e, k_B,
+  N_A, R, F, eps0, mu0, k_e, sigma_SB, b_wien, m_e, m_p, m_u, a0, R_inf,
+  alpha, g_n, atm), each alone, doubled, halved or inverted, are written
+  the same way: the 1%-noise gas table in kPa and litres gives
+  `R*T_K/V_L`. A name equal to a column's name is not written. Constants
+  written by name are tried before simple rounding (Griffith's 2/pi is
+  no longer 7/11), and a law's `free_constants` does not count them.
+  Rarer names still need the data to single them out. `sqrt(2)` is no
+  longer written `2/sqrt(2)`.
+- **Summary:** a `simpler law` line shows a listed law with fewer free
+  constants and an r² of at least 0.98 (NASA's surface gravities give a
+  two-term fit first, the giants' rotation being in the data, and
+  `6.1e7*M/R**2` at r² 0.989 below it); it is in the JSON as
+  `simpler_law`, an index into `results`.
+- **A law does not miss many rows badly:** when the target keeps one
+  sign, at most max(1, 5% of the rows) may be missed by more than 25% of
+  their value (and more than the cell's quantum). An r² near 1 over a
+  target spanning decades can come from its large values alone: the
+  steam table's `0.002229*exp((4*sqrt(3)/3)*T**(1/3)) + 1` (r² 0.99999)
+  missed its two smallest pressures by 28% and 64% and is no longer a
+  law. When the target is 0 on a row the `fit`
+  line no longer claims every row is within precision.
+- **Ranking of laws short of the cells' precision** ignores misses under
+  0.5% of the target: of two laws fitting within that, the one with fewer
+  nodes and constants comes first. JPL's moons of Jupiter gave a longer
+  form fitting Io's and Europa's 0.75% resonance offsets; they give
+  `6.4621e-9*a**(3/2)`.
+- **Names on evidence:** a constant is written by name only when the data
+  pin it to 1% (relative standard error); a name the snap chose that they
+  do not pin is written to the digits they support (a Cepheid slope
+  `-1.41`, not `-sqrt(2)`). An answer that is no law writes no names. A
+  physical constant is tried only as the overall scale of a one-term law
+  (no `g_n/2` inside a cooling curve). A power that is itself rational is
+  never a name (`1/16`, not `1/(8*(sqrt(2)**2))`).
+- A snapped fraction whose decimal does not end is written p/q in
+  `symbolic` and `named` (`(11/7)*a*log(a)`, not `1.57142857143*...`).
+- The note that the rounding floor was not estimated is given only with
+  a law (it qualifies `within_precision`); with no law the summary's
+  `data` line gives only the table's size.
+- Real-world acceptance tests (`fixtures/real`): NASA planets and JPL
+  orbits (Kepler's third law), pendulum swings on four worlds at 1%
+  noise, 200 and 30 of them (`2*pi*sqrt(L/g)`), Boyle's 1662 table
+  (P = k/V), NASA surface gravities (the simpler law shown), a steam
+  table (its fit missing the small pressures refused), and Hubble's 1929 galaxies and the
+  1930 stopping distances (no law).
+- README rewritten around the clean-law check, with the NASA planets and
+  Hubble's galaxies as examples (`examples/planets.csv`,
+  `examples/hubble_1929.tsv`).
+
 ## 1.3.4
 
 - A `--target` argument that is not valid UTF-8 no longer panics. It is

@@ -20,15 +20,18 @@ recursive reduction.
 
 - Reads a TSV or CSV from stdin, prints its answers as one JSON object or a
   short text report
-- Says how far to trust each answer: exact, approximate, or no law found,
-  judged against the precision the data is written to
+- A quick check for a clean law: it answers with the law, written cleanly
+  (`a**(3/2)`, not `exp(1.4998*log(a))`), when one fits reasonably well,
+  and says no law when none does
+- Takes every table as measured data, noisy or rounded, and reports how
+  closely the law fits: its `r2`, computed from the printed equation, its
+  largest miss, and whether that is within the precision the cells are
+  written to
 - Handles small tables (a law with one constant from 6 rows, one with none
-  from 5) and rounded data; noise beyond the data's written precision is
-  reported as an approximate fit, not an exact law
+  from 5)
 - Single binary, zero dependencies (fully static with the musl target)
 - Deterministic; the same input produces the same output, byte for byte,
   unless the time budget runs out (`--timeout 0` removes the budget)
-- The reported `r2` is computed from the printed equation itself
 
 Full documentation: [docs/reference.md](docs/reference.md).
 
@@ -80,59 +83,68 @@ release archive.
 
 ```sh
 $ ./keplearn --target force --format summary < examples/gravity.tsv
-force = m1*m2/r**2                                exact (r2 = 1.0000, 60 rows)
+force = m1*m2/r**2                                law (r2 = 1.0000, 60 rows)
 constants: none free
+fit: largest miss 0.000379% of the target's value (where the target is 1.06791), within the precision the cells are written to
 data: 60 rows, 3 columns; rounding floor 1.0e-6 of the target's variance
 ```
 
-The summary states a verdict for the answer:
+The verdict is `law` or `no law found`. A law fits reasonably well (r² of
+at least 0.9, or a median miss within 5% of the target) and is written as
+cleanly as its constants allow: a fitted constant within 0.1% of a simple
+value takes it, and one within the data's uncertainty of a common
+constant (`pi`, `2*pi`, `e`, `sqrt(2)`) or a physical constant in SI
+units (`c`, `G`, `h`, `k_B`, `R`, `g_n`, ...) is written by name. The `fit`
+line says how closely: the largest miss, and whether the cells' written
+digits account for it. When a law with fewer constants also fits closely,
+the summary shows it as `simpler law`.
 
-- **exact**: the law fits the data to the precision the cells are written
-  to, is well conditioned, and the table has rows to spare for its
-  constants;
-- **approximate**: it fits far better than a constant, but not to the data's
-  precision (measurement noise, or a form that is close but not right); the
-  line `why not exact` says which;
-- **no law found**: nothing beats a constant by enough, or the table is too
-  small to check the best fit; the best fit is still shown, with the reason.
-
-Rounded data is handled by its written precision. Kepler's planets typed to
-two significant digits still give the law, and the verdict accounts for the
-rounding of both columns:
+Real measurements are what it is for. The eight planets as NASA lists
+them, distances and periods to three or four digits:
 
 ```sh
-$ ./keplearn --target T_years --format summary < examples/planets_2_digits.tsv
-T_years = a_AU**(3/2)                             exact (r2 = 0.9990, 9 rows)
+$ ./keplearn --target T_yr --format summary < examples/planets.csv
+T_yr = a_AU**(3/2)                                law (r2 = 0.99999953, 8 rows)
 constants: none free
-data: 9 rows, 1 column; rounding floor 5.3e-4 of the target's variance
-next best: T_years = 0.93*exp(1.525*log(a_AU))    approximate
-note: the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly
+fit: largest miss 0.104% of the target's value (where the target is 0.241), more than the precision the cells are written to
+data: 8 rows, 1 column; rounding floor 3.6e-8 of the target's variance
+next best: T_yr = 1.57142857143*a_AU*log(a_AU)    no law found
+note: column 'planet' has no numeric values; it is dropped
 ```
 
-The note says the verdict rests on reading the distances as rounded to two
-digits. Round feature values can also be exact settings (lengths of 0.25
-and 0.5 m); Keplearn reads them that way when the target is written far more
-precisely, so a pendulum timed to five digits keeps its 2.006 instead of
-rounding it to 2.
-
-Noise beyond the data's written precision is reported as approximate:
+The fitted exponent is 1.4998; the periods differ from Kepler's law by
+about 0.1% (the planets' own masses), and the law is what is asked for.
+Noise gives the law with its misses; the fitted 8.31 is within the
+data's uncertainty of the gas constant, so it is written `R`:
 
 ```sh
 $ ./keplearn --target P_kPa --format summary < examples/gas_1pct_noise.tsv
-P_kPa = 8.31*T_K/V_L                              approximate (r2 = 0.9992, 441 rows)
-constants: 1 free
-why not exact: the best fit leaves residuals above the precision the cells are written to; its largest miss is 3.44% of the target's value (where the target is 132.01)
+P_kPa = R*T_K/V_L                                 law (r2 = 0.9992, 441 rows)
+constants: none free; snapped constants written by name
+fit: largest miss 3.39% of the target's value (where the target is 132.01), more than the precision the cells are written to
 data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
-next best: P_kPa = 13.0794*T_K - 8.3266*T_K*arctan(V_L)    approximate
+next best: P_kPa = 13.0794*T_K - 8.3266*T_K*arctan(V_L)    law
 ```
 
-The default output is one JSON object (schema `keplearn.result.v2`), the
+Scattered data gives no law. Hubble's 1929 galaxies show the trend, not a
+law that fits:
+
+```sh
+$ ./keplearn --target velocity_kms --format summary < examples/hubble_1929.tsv
+velocity_kms: no law found (24 rows, 1 column)
+best fit: velocity_kms = 400*distance_Mpc (r2 = 0.6141; not confirmed)
+reason: the best fit (r2 = 0.6141) does not beat a constant by enough to be a law
+data: 24 rows, 1 column
+next best: velocity_kms = 470*sqrt(distance_Mpc)    no law found
+```
+
+The default output is one JSON object (schema `keplearn.result.v3`), the
 same for the same input, byte for byte:
 
 ```sh
 $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
 {
-  "schema": "keplearn.result.v2",
+  "schema": "keplearn.result.v3",
   "results": [
     {
       "expr": "x1*x2/x3**2",
@@ -155,14 +167,18 @@ $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
       "factor": "direct",
       "structure": "c1*x1*x2/x3**2 + b",
       "canonical": "x1*x2/x3**2",
-      "verdict": "exact",
+      "verdict": "law",
       "symbolic": "x1*x2/x3**2",
       "named": "m1*m2/r**2",
-      "free_constants": 0
+      "free_constants": 0,
+      "within_precision": true,
+      "largest_miss": 0.0000037943926898313663,
+      "largest_miss_at": 1.06791
     }
   ],
-  "verdict": "exact",
+  "verdict": "law",
   "reason": null,
+  "simpler_law": null,
   "stopped_by": "exact_exit",
   "validation": "leave-one-out",
   "noise_floor": 1.037230275256967e-6,
@@ -181,12 +197,11 @@ $ ./keplearn --target force --top-k 1 --pretty < examples/gravity.tsv
 
 `model` is in `x1..xN`, the feature columns in file order (target
 excluded); `named` is the same law in the table's column names and
-`symbolic` writes snapped constants by name (`2*pi`, `sqrt(2)`). `r2` is
-computed from the printed model on every row.
+`symbolic` writes snapped constants by name (`2*pi`, `sqrt(2)`, `11/7`).
+`r2` and `largest_miss` are computed from the printed model on every row.
 
 The [reference](docs/reference.md) documents every option, every output
-field, and the exact rules behind the verdicts; `--help` is the short
-version.
+field, and the rules behind the verdicts; `--help` is the short version.
 
 Useful flags:
 
@@ -211,25 +226,25 @@ expressions (and products of them), or a ratio of two such sums.
 
 Every candidate is put into one canonical normal form, refitted, and has
 its constants snapped to nearby rationals and multiples of pi, e, sqrt(2)
-and sqrt(3) when the data cannot tell the difference. An exact form is then
-reduced: a term, transform or factor the fit does not need is removed.
-Below 80 rows the candidates are scored by leave-one-out with every
-constant refitted; above, on a held-out quarter of the rows, with a
-description-length penalty for size.
+and sqrt(3) when the data cannot tell the difference. A form that fits
+to the data's precision is then reduced: a term, transform or factor the
+fit does not need is removed. Below 80 rows the candidates are scored by
+leave-one-out with every constant refitted; above, on a held-out quarter
+of the rows, with a description-length penalty for size.
 
-Exactness is judged against the precision of the data. The number of
-digits written in each column sets a rounding floor, the error those
-digits alone imply through the candidate law; an answer is exact when its
-residuals are within that floor, every row fits to its own precision when
-the target spans orders of magnitude, its constants are not tuned to
-cancel, and the table has more rows than its constants need.
+The precision of the data is read from the digits written in each
+column: a rounding floor, the error those digits alone imply through the
+candidate law. An answer within that floor, fitting every row to its own
+precision and with constants not tuned to cancel, is within precision;
+it ends the search early and is listed first.
 
 Where the data allow more than one answer (which value a constant snaps
 to, whether a term stays, which answer comes first), one description
 length decides: the cost of the target's cells given the answer, judged
 against the precision they are written to, plus the cost of the answer's
-nodes and free constants. Answers are listed exact first, then
-approximate, each by that criterion.
+nodes and free constants. Last, each answer is written cleanly: a fitted
+constant within 0.1% of a simple value (3/2, 1, 0.25) takes that value,
+and an offset or term under 0.1% of the target is dropped.
 
 The `--timeout` budget is split: the search uses 80% of it and the
 answers are assembled in the rest. The heap is bounded by `--max-memory`:

@@ -6,8 +6,9 @@ const HELP: &str = "\
 keplearn - symbolic regression engine
 
 Reads a TSV or CSV with a header row on STDIN (tab-delimited if the
-header has a tab, else comma) and searches for a closed-form expression
-of the target column in terms of the other numeric columns.
+header has a tab, else comma) and looks for a clean law: a closed-form
+expression of the target column in terms of the other numeric columns
+that fits reasonably well. When none does, it says no law.
 
 USAGE:
   keplearn [OPTIONS] < data.tsv
@@ -40,11 +41,13 @@ OPTIONS:
   -h, --help              print this help and exit
   -V, --version           print the version and exit
 
-OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
-  schema        \"keplearn.result.v2\"
+OUTPUT (stdout, one JSON object, schema keplearn.result.v3):
+  schema        \"keplearn.result.v3\"
   results       up to --top-k answers; each has every field below
-  verdict       the first answer's verdict (see VERDICTS)
-  reason        why the verdict is not exact, or null
+  verdict       the first answer's verdict: law or no law found
+  reason        why no law was found, or null
+  simpler_law   index in results of a law with fewer free constants
+                and r2 of at least 0.98, when the first is a law; or null
   stopped_by    exact_exit | frontier_exhausted | timeout | memory
   validation    holdout (80 rows or more: a quarter of the rows, at
                 most 2000, held out) or leave-one-out (fewer rows)
@@ -61,14 +64,19 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
   symbolic      model with snapped constants by name (2*pi, sqrt(2))
   named         symbolic in the column names
   verdict       this answer's verdict
+  within_precision  whether it fits every row to the precision the
+                cells are written to (null when no law)
+  largest_miss  its largest miss as a fraction of the target's value;
+                largest_miss_at is the target's value there
   r2            R^2 of model evaluated on every row (null when the
                 target is constant)
   holdout_r2    the score the verdict reads: R^2 on the held-out rows,
                 or the leave-one-out R^2
   search_r2     the search's internal score (diagnostic only)
-  free_constants  constants read off the data (an exact answer does not
-                count integers, small fractions and multiples of pi, e,
-                sqrt(2), sqrt(3))
+  free_constants  constants read off the data (a law does not count
+                constants written by name, the multiples of pi, e,
+                sqrt(2), sqrt(3) and the physical constants; a law within
+                precision does not count integers and small fractions)
   uses          the columns the model reads
   structure     the model with its constants as c1, c2, ..., b
   canonical     the model in canonical form (equal to model)
@@ -76,22 +84,30 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v2):
                 the raw form: model = scale*expr + offset, with xj in
                 expr meaning column columns[j-1] (0-based)
 
-  Answers are ordered by verdict (exact, approximate, no law found);
-  within a verdict by description length: the cost of the target's
+  Answers are ordered: laws within precision, other laws, no law found;
+  within each by description length: the cost of the target's
   cells given the answer (the cells' written precision and any extra
   noise) plus the answer's nodes and free constants. The same criterion
   chooses snapped constants and whether a term stays, so a lower answer
   can have the higher r2.
 
 VERDICTS:
-  exact         fits to the precision the cells are written to (to
-                1e-9 of the variance on full-precision data; row by row
-                when the target spans decades), is well conditioned,
-                and has rows to spare for its constants
-  approximate   fits far better than a constant, but not to the data's
-                precision (noisy data, or the form is close but wrong)
-  no law found  nothing beats a constant by enough, or the table has
-                too few rows to check the best fit; it is still listed
+  law           fits reasonably well (far better than a constant; r2 of
+                at least 0.9 or a median miss within 5% of the target;
+                at most max(1, 5% of rows) missed by over 25%), with
+                rows to spare for its constants; written
+                cleanly: a fitted constant within 0.1% of a simple value
+                (3/2, 1, 0.25) takes it, one within three standard
+                errors of a common constant (pi, 2*pi, e, sqrt(2)) or a
+                physical constant in SI units (c, G, h, k_B, N_A, R,
+                g_n, ...) is written by name, and an offset or term
+                under 0.1% of the target is dropped
+  no law found  nothing fits well enough, or the table has too few rows
+                to check the best fit; the best fit is still listed
+
+  Every table is taken as measured, noisy or rounded. Whether a law fits
+  to the precision the cells are written to is within_precision, a note
+  on the answer, not a verdict.
 
 EXIT STATUS:
   0    a result was written (whatever its verdict)
@@ -113,7 +129,8 @@ NOTES:
     fitted constant can be confirmed, one with a constant needs 6.
   * Round feature values (0.25, 0.5, integers) count as exact settings
     when the target is written far more precisely; otherwise as rounded
-    readings, and a warning says when an exact verdict depends on that.
+    readings, and a warning says when within_precision depends on that.
+  * The summary shows simpler_law when there is one.
   * docs/reference.md (in the release archive) documents every rule.
 
 AUTHOR:

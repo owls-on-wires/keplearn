@@ -658,10 +658,10 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                     );
                 (
                     vec![
-                        crate ::output::ResultObj::constant(v, "exact",
-                        Some(usize::from(! crate ::guard::structural_constant(v))), None)
+                        crate ::output::ResultObj::constant(v, "law", Some(usize::from(!
+                        crate ::guard::structural_constant(v))), None)
                     ],
-                    "exact",
+                    "law",
                     None,
                 )
             }
@@ -730,17 +730,26 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             uses: vec![names[j].clone()],
             structure: Some(format!("c1*{} + b", model)),
             canonical: Some(model.clone()),
-            verdict: "exact",
+            verdict: "law",
             symbolic: model.clone(),
             named: crate::output::named_model(&model, &names),
             free_constants: Some(0),
+            within_precision: Some(true),
+            largest_miss: Some((
+                0.0,
+                target
+                    .iter()
+                    .copied()
+                    .find(|v| v.is_finite())
+                    .unwrap_or(0.0),
+            )),
         };
         for w in &warnings[ingest_warnings.len().min(warnings.len())..] {
             eprintln!("keplearn: {}", w);
         }
         let oj = crate::output::Envelope {
             results: vec![r],
-            verdict: "exact",
+            verdict: "law",
             reason: None,
             stopped_by: "exact_exit",
             validation: if n_rows >= HOLDOUT_MIN_ROWS {
@@ -1682,6 +1691,38 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
                 _ => v,
             };
+            let v = match out_r2[ci] {
+                Some(r)
+                    if v != "no law found"
+                        && !(r >= LAW_MIN_R2)
+                        && !crate::guard::median_miss(&c.model, &features, &target, n_rows)
+                            .is_some_and(|m| m <= crate::config::LAW_MAX_MEDIAN_MISS) =>
+                {
+                    why = Some(
+                        format!(
+                            "the best fit (r2 = {:.4}) explains less than {}% of the target's variance, and its typical miss is over {}% of the target's value",
+                            r, (100.0 * LAW_MIN_R2).round(), (100.0 * crate
+                            ::config::LAW_MAX_MEDIAN_MISS).round()
+                        ),
+                    );
+                    "no law found"
+                }
+                _ => v,
+            };
+            let v = match crate::guard::badly_missed(
+                &c.model, &features, &target, &q_target, n_rows,
+            ) {
+                Some((bad, allowed)) if v != "no law found" && bad > allowed => {
+                    why = Some(format!(
+                        "the best fit misses {} of {} rows by more than {}% of the target's value",
+                        bad,
+                        (0..n_rows).filter(|&i| target[i].is_finite()).count(),
+                        (100.0 * crate::config::LAW_BAD_MISS).round()
+                    ));
+                    "no law found"
+                }
+                _ => v,
+            };
             pool.push(Entry {
                 ci,
                 canon,
@@ -1697,7 +1738,17 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             .collect();
         let rel: Vec<f64> = pool
             .iter()
-            .map(|e| crate::guard::cached_dl(&finalists[e.ci].model, &features, &target, train_n))
+            .map(|e| match e.v {
+                "approximate" => crate::guard::practical_dl(
+                    &finalists[e.ci].model,
+                    finalists[e.ci].nodes,
+                    &features,
+                    &target,
+                    train_n,
+                )
+                .unwrap_or(f64::INFINITY),
+                _ => crate::guard::cached_dl(&finalists[e.ci].model, &features, &target, train_n),
+            })
             .collect();
         let mut keyed: Vec<(usize, bool, f64, Entry)> = pool
             .into_iter()
@@ -1729,10 +1780,10 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                     (&c.model, &identity_cols, 1.0, 0.0)
                 };
             let v = e.v;
-            let free = if v == "exact" {
-                crate::guard::free_constants(&c.model)
-            } else {
-                crate::guard::all_constants(&c.model)
+            let free = match v {
+                "exact" => crate::guard::free_constants(&c.model),
+                "no law found" => crate::guard::all_constants(&c.model),
+                _ => crate::guard::unnamed_constants(&c.model),
             };
             let why = e
                 .why
@@ -1768,11 +1819,21 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             } else {
                 why
             };
+            let is_law = v != "no law found";
             if i == 0 {
-                top_verdict = v;
-                top_reason = if v == "exact" { None } else { why };
+                top_verdict = if is_law { "law" } else { "no law found" };
+                top_reason = if is_law { None } else { why };
             }
-            let sym = crate::output::symbolic_model(&c.model);
+            let miss = if is_law {
+                crate::guard::largest_miss(&c.model, &features, &target, n_rows)
+            } else {
+                None
+            };
+            let sym = if is_law {
+                crate::output::symbolic_model(&c.model, &names)
+            } else {
+                c.model.clone()
+            };
             results.push(crate::output::ResultObj {
                 expr: out_expr.to_string(),
                 model: c.model.clone(),
@@ -1785,10 +1846,12 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 uses: crate::output::used_columns(&c.model, &names),
                 structure: e.canon,
                 canonical: Some(c.model.clone()),
-                verdict: v,
+                verdict: if is_law { "law" } else { "no law found" },
                 named: crate::output::named_model(&sym, &names),
                 symbolic: sym,
                 free_constants: free,
+                within_precision: is_law.then_some(v == "exact"),
+                largest_miss: miss,
             });
         }
     }
@@ -1818,13 +1881,18 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             crate::guard::within_rounding(&r.model, &features, &target, n_rows)
         }
     });
-    if !floor_estimated {
+    if !floor_estimated && top_verdict == "law" {
         warnings.push(crate::output::FLOOR_NOT_ESTIMATED.to_string());
     }
-    if top_verdict == "exact" && !features_exact && !exact_as_settings {
+    if results
+        .first()
+        .is_some_and(|r| r.within_precision == Some(true))
+        && !features_exact
+        && !exact_as_settings
+    {
         warnings
             .push(
-                "the exact verdict takes the feature columns as rounded to their written digits; if they are exact settings, no law fits them exactly"
+                "the first answer is within the cells' precision with the feature columns read as rounded to their written digits; as exact settings it misses them"
                     .to_string(),
             );
     }

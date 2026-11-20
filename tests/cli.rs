@@ -65,7 +65,8 @@ fn every_warning_of_the_result_is_printed_on_stderr() {
     .unwrap();
     let (code, out, err) = run(&["--target", "T_years"], &table);
     assert_eq!(code, 0);
-    let note = "the exact verdict takes the feature columns as rounded";
+    let note =
+        "the first answer is within the cells' precision with the feature columns read as rounded";
     assert!(out.contains(note), "{}", out);
     assert!(err.contains(&format!("keplearn: {}", note)), "{}", err);
 }

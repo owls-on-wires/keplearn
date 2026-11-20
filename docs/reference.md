@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 1.3.4, result schema `keplearn.result.v2`.
+Version 2.0.0, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -112,10 +112,10 @@ names are escaped in error messages.
 status 0:
 
 - a target with the same value on every row (two rows or more): the
-  answer is that value, verdict `exact`, `r2` null (r² is undefined for a
+  answer is that value, verdict `law`, `r2` null (r² is undefined for a
   constant), and a warning names the value;
 - a feature column equal to the target on every row: the answer is that
-  column, verdict `exact`, with a warning (a longer form of the same law
+  column, verdict `law`, with a warning (a longer form of the same law
   could otherwise be found first);
 - fewer than 5 data rows: no answer, verdict `no law found`, and a
   `reason` saying a law needs at least 5 rows (6 if it has a fitted
@@ -150,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 1.3.4`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.0.0`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -166,16 +166,17 @@ By default stdout holds exactly one JSON object and nothing else. With
 
 | field | type | meaning |
 |---|---|---|
-| `schema` | string | `"keplearn.result.v2"`; changes whenever a field changes |
+| `schema` | string | `"keplearn.result.v3"`; changes whenever a field changes |
 | `results` | array | the answers, best first (see [ordering](#how-answers-are-ordered)), at most `--top-k` |
-| `verdict` | string | the first answer's verdict: `exact`, `approximate` or `no law found` |
-| `reason` | string or null | why the verdict is not `exact`; null when it is |
-| `stopped_by` | string | `exact_exit` (an exact answer ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) or `memory` (the heap reached 75% of `--max-memory`) |
+| `verdict` | string | the first answer's verdict: `law` or `no law found` (see [verdicts](#verdicts)) |
+| `reason` | string or null | why no law was found; null for a law |
+| `simpler_law` | integer or null | when the first answer is a law: the index in `results` of a later law with fewer free constants and an `r2` of at least 0.98 (the fewest constants, then the highest `r2`); a second effect in real data can put a longer law first (the giants' rotation in NASA's surface gravities), and this keeps the simpler one in view. Null otherwise |
+| `stopped_by` | string | `exact_exit` (an answer within the cells' precision ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) or `memory` (the heap reached 75% of `--max-memory`) |
 | `validation` | string | `holdout` (80 rows or more) or `leave-one-out` (fewer); see [scoring](#scoring) |
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
 | `rows` | integer | data rows read (after skipped rows) |
-| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, the columns kept above 30, invalid UTF-8, values that overflow, a constant target) and on the verdict (an exact verdict that rests on reading the features as rounded; a rounding floor not estimated) |
+| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, the columns kept above 30, invalid UTF-8, values that overflow, a constant target) and on the first answer (a fit within the cells' precision only with the features read as rounded; a rounding floor not estimated) |
 | `time_ms` | integer | elapsed milliseconds; present only with `--timing` |
 
 `results` is empty only for a table too small to search (fewer than 5
@@ -192,7 +193,10 @@ null.
 | `model` | string | the law in `x1..xN`, constants written to 13 significant digits |
 | `symbolic` | string | `model` with snapped constants written by name (`2*pi`, `sqrt(2)/2`, `pi**2`, `1/sqrt(2*pi)`, `log(2)`, `euler_gamma`); `euler_gamma` is NumPy's `np.euler_gamma` |
 | `named` | string | `symbolic` in the table's column names (a name that is not a plain identifier is written in backticks) |
-| `verdict` | string | this answer's verdict |
+| `verdict` | string | this answer's verdict: `law` or `no law found` |
+| `within_precision` | boolean or null | whether the answer fits every row to the precision its cells are written to (see [within precision](#within-precision)); null when no law |
+| `largest_miss` | number or null | the answer's largest miss on any row, as a fraction of the target's value there; null when no law, or when the target is 0 on some row |
+| `largest_miss_at` | number or null | the target's value on that row |
 | `r2` | number or null | R² of `model` evaluated on every row; null for a constant target. Rows where the model is undefined are left out, and the answer scores −1 if that is more than a tenth of them |
 | `holdout_r2` | number or null | the score the verdict reads (see [scoring](#scoring)): R² on the held-out rows (`validation: holdout`) or by leave-one-out (`validation: leave-one-out`); null when it cannot be computed |
 | `search_r2` | number or null | the search's internal score for the candidate, before it became this answer; diagnostic only, and it can be far above `r2` |
@@ -212,27 +216,26 @@ of those names.
 `--format summary` prints, for a law:
 
 ```text
-force = m1*m2/r**2                                exact (r2 = 1.0000, 60 rows)
+force = m1*m2/r**2                                law (r2 = 1.0000, 60 rows)
 constants: none free
-data: 60 rows, 3 columns; rounding floor 9.9e-7 of the target's variance
-next best: force = (2*sqrt(3)/3)*m1*m2**(3/4)*sqrt(arctan(m2))/r**2    approximate
+fit: largest miss 0.000379% of the target's value (where the target is 1.06791), within the precision the cells are written to
+data: 60 rows, 3 columns; rounding floor 1.0e-6 of the target's variance
 ```
 
 - line 1: the first answer in the column names, its verdict, `r2`, rows
   (`r2` to 4 decimals, or to as many as show it is below 1 on an answer
-  that is not exact: `0.999956`, never `1.0000`; `r2 > 0.9999999999`
+  not within precision: `0.999956`, never `1.0000`; `r2 > 0.9999999999`
   when it is within 1e-10 of 1);
 - `constants`: the free constants, and whether snapped constants were
   written by name;
-- `why not exact`: the `reason`, when the verdict is `approximate`. When
-  the answer misses some cell beyond its rounding, it ends with the
-  answer's largest miss as a percentage of the target (to two decimals,
-  or two significant digits below 0.01%), and the target value where it
-  happens. When the answer lands every cell but fails a condition on its
-  form (rule 4 under [exact](#exact)), it says which: a term negligible
-  against its sum, terms that cancel, a function whose argument barely
-  varies, or a function a constant could replace;
+- `fit`: the answer's largest miss as a percentage of the target (two
+  significant digits), the target value where it happens, and whether
+  that is within the precision the cells are written to (when the target
+  is 0 on some row no miss is given as a fraction of it, and the line
+  says so);
+- `simpler law`: the answer `simpler_law` points to, when there is one;
 - `data`: rows, columns, and the rounding floor (or `full precision`);
+  with no law, rows and columns only;
 - `next best`: the second answer and its verdict, when there is one;
 - `note`: each warning.
 
@@ -244,11 +247,46 @@ Numbers in the summary are written to 12 significant digits.
 
 ## Verdicts
 
-Each answer gets one of three verdicts. They are decided in this order.
+Keplearn is a quick check for a clean law. Every table is taken as
+measured, with noise, whatever its digits: an answer is either a law
+that fits reasonably well, written as cleanly as its constants allow
+(see [clean constants](#clean-constants)), or no law. Whether the fit
+reaches the precision the cells are written to is reported on the
+answer (`within_precision`, `largest_miss`), not as a verdict.
 
-### exact
+### law
 
-All of these hold:
+An answer is a law when all of these hold:
+
+1. **It is supported.** It fits within precision (below), or its
+   description length beats a constant's by a margin:
+
+       n/2 × ln(1 − R²) + ln(n)/2 × size  <  −ln(S)
+
+   where `n` is the number of scoring rows, R² is the validation score,
+   `size` is the number of nodes in the expression, and `S` is the number
+   of search nodes the run expanded. The right-hand side is the cost of
+   having chosen this structure among all those tried.
+2. **It fits reasonably well.** Its `r2` on every row is at least 0.9,
+   or, when the target keeps one sign, its median miss is within 5% of
+   the target's value. A trend through scattered rows (Hubble's 1929
+   galaxies, r² 0.61; the 1930 stopping distances, r² 0.63 with a median
+   miss near 20%) is not a law, however unlikely by chance; a law over a
+   target that barely moves (100 to 103 with 1% noise) has a low r² and
+   is still a law. And when the target keeps one sign, it misses at most
+   max(1, 5% of the rows) by more than 25% of the target's value (and
+   more than the cell's written quantum): over a target spanning decades
+   an r² near 1 can come from the large values alone (a steam table's
+   `0.002229*exp((4*sqrt(3)/3)*T**(1/3)) + 1`, r² 0.99999, misses its two
+   smallest pressures by 28% and 64%). One wild row, a typo, is allowed.
+3. **It has rows to spare.** The table has at least (constants + 3)
+   rows, counting every constant when it is not within precision and the
+   free ones when it is (see [free constants](#free-constants)).
+
+### within precision
+
+A law is within precision (`within_precision: true`) when all of these
+hold:
 
 1. **It fits to the data's precision.** Its validation score (held-out
    R², or leave-one-out R²; see [scoring](#scoring)) is at least
@@ -269,45 +307,31 @@ All of these hold:
    (1e-8 × the row's value)².
 4. **It is well conditioned.**
    - No term of any sum is negligible: its share of the sum is at least
-     3e-5 (the square root of 1e-9, the precision of an exact fit on
-     full-precision data). On rounded data whether a term is needed is
-     decided by the [selection criterion](#the-selection-criterion): the
-     canonical stage drops it when the data do not pay for it.
+     3e-5 (the square root of 1e-9).
    - No sum's terms exceed the sum itself by a factor of 1e6 (huge
      constants cancelling).
    - No function or power group has an argument that barely varies over
      the rows (a range below 3% of its typical size, or 0.03 in absolute
-     terms for `exp`, `sin` and `cos`). Over such a range the function is
-     nearly linear and stands in for a simpler form.
+     terms for `exp`, `sin` and `cos`).
    - No function is padding: a function or square root whose output
      varies by less than 2% of its mean over the rows is saturated, and
-     if replacing it by its mean keeps the answer within the exact
-     tolerance, it is a constant written long (`arctan(T)` where T is
-     large on every row).
-5. **It has rows to spare.** The table has at least (free constants + 3)
-   rows.
-6. **It is close to the best answer.** An answer below the first is exact
-   only if its unexplained variance (1 − `r2`) is at most 3 times the
-   first answer's, or 3e-9 if that is larger.
+     if replacing it by its mean keeps the answer within the tolerance,
+     it is a constant written long (`arctan(T)` where T is large on every
+     row).
+5. **It is close to the best answer.** An answer below the first is
+   within precision only if its unexplained variance (1 − `r2`) is at
+   most 3 times the first answer's, or 3e-9 if that is larger.
 
 Below 80 rows, an answer whose leave-one-out score cannot be computed is
-never exact (see [scoring](#scoring)).
-
-### approximate
-
-Not exact, but its description length beats a constant's by a margin:
-
-    n/2 × ln(1 − R²) + ln(n)/2 × size  <  −ln(S)
-
-where `n` is the number of scoring rows, R² is the validation score,
-`size` is the number of nodes in the expression, and `S` is the number of
-search nodes the run expanded. The right-hand side is the cost of having
-chosen this structure among all those tried.
+never within precision (see [scoring](#scoring)). Within precision is
+judged on the answer as written, after its constants are made clean: a
+fitted 1.0004 written as 1 may leave the cells' precision, and is still
+written 1.
 
 ### no law found
 
-Neither of the above. The answer is still listed, and `reason` says which
-of these applies to the first answer:
+The answer is still listed, as the best fit, and `reason` says which of
+these applies to the first answer:
 
 - the table is too small to check it by leaving one row out (the refit on
   all rows but one needs its constants + 3 rows), or, below 6 rows, only
@@ -315,6 +339,9 @@ of these applies to the first answer:
 - it has more constants than the rows can confirm (fewer than its
   constants + 3 rows);
 - it does not beat a constant by the margin above;
+- it explains less than 90% of the target's variance and its median miss
+  is over 5% of the target's value (or the target changes sign);
+- it misses more rows than allowed by more than 25% of their value;
 - the search found no candidate, or none predicted the rows it was
   checked on better than their mean (or could be evaluated on enough of
   them).
@@ -351,8 +378,8 @@ settings when both hold:
   written precision (a million six-digit readings in [0.5, 3] lie one
   quantum apart).
 
-Otherwise both columns are read as rounded as written. When an answer is
-exact only under that second reading, a warning says so.
+Otherwise both columns are read as rounded as written. When the first answer is
+within precision only under that second reading, a warning says so.
 
 Keplearn computes each floor through every candidate whose R² on the
 target is within 0.01 of the best (at most 30 of them), and takes the
@@ -361,16 +388,16 @@ smallest. It does this only when some candidate of the search reaches R²
 warning says so, and the summary prints "rounding floor not estimated"
 instead of "full precision". A floor below 1e-18 is reported as 0.
 
-During the search, before any candidate exists, "exact" is judged against
+During the search, before any candidate exists, "within precision" is judged against
 the target's own floor, which needs no candidate (its cells' rounding
 variance relative to its variance): a law fitting a precisely written
 target ends the search at once.
 
 A floor is an upper bound on the error from rounding. When the features
 are read as rounded and are in fact exact settings, the floor is too
-generous and several close forms can be exact at once; the warning above
-flags this, and rule 6 keeps alternatives far worse than the first answer
-from being called exact.
+generous and several close forms can be within precision at once; the
+warning above flags this, and rule 5 keeps alternatives far worse than
+the first answer from being called within precision.
 
 ### Free constants
 
@@ -387,13 +414,102 @@ A constant is free when it was read off the data. These are not free:
 
   The second group is limited so that named constants do not cover the
   number line (2.0148 is within 1e-5 of 7·ln 10/8).
+- 1, 2 or ½ times a physical constant in SI units, or the reciprocal of
+  one of those (see [physical constants](#physical-constants)).
 
   These are the forms `symbolic` writes by name.
 
-On an `exact` answer, `free_constants` counts only the free ones. On any
-other answer every constant counts, because snapping a constant on a fit
-short of exact only rounds a fitted value. A coefficient of 1 and an
-offset of 0 are not constants.
+On a law within precision, `free_constants` counts only the free ones.
+On another law it counts every constant except those written by name:
+`R*T/V` and `(2*pi)*sqrt(L)/sqrt(g)` have none, but a rounded 6.3 or
+0.1 was read off the data and counts. An answer that is no law counts
+every constant. The rows a law needs (constants + 3) count every constant
+when it is short of the cells' precision, because there a snap only
+rounds a fitted value. A coefficient of 1 and an offset of 0 are not
+constants.
+
+### Clean constants
+
+Last, every answer is written as cleanly as its constants allow. The
+data are not asked whether they single the clean value out: every table
+is taken as noisy, and a law is what is wanted.
+
+- A fitted constant within 0.1% of a simple value takes that value: a
+  value written with one or two significant digits, or a fraction p/q
+  with |p| and q at most 12. A fitted exponent of 1.4998 is 3/2, a scale
+  of 0.9994 is 1; 8.314 stays (0.17% from 8.3), and so do 0.399 and a
+  fitted 1.005.
+- An offset under 0.1% of the target's mean size is dropped, and so is a
+  term that contributes less than that on every row (unless it is the
+  only one).
+- A value the snap already wrote as structural (`2*pi`, `1/(4*pi)`, 2/3)
+  is left as it is.
+- A common mathematical constant, or a physical one, takes the place of
+  a fitted value when the data allow it: within 2% of the value, putting
+  it in raises the unexplained variance by at most 9 times the residual
+  variance per remaining degree of freedom (three standard errors of the
+  constant). This is tried before the rounding above, so 2/pi is
+  preferred to the fraction 7/11 near it. The mathematical ones are pi
+  times 1/4, 1/2, 1, 2, 4 or 4/3; e, sqrt(2), sqrt(3), log(2) and
+  sqrt(pi) times 1/2, 1 or 2; sqrt(2*pi); and the reciprocals of all of
+  these (2/pi, 1/(4*pi), 1/e, sqrt(2)/2). A physical constant is tried
+  only as the overall scale of a one-term law (R in `R*T/V`); inside a
+  function or beside an offset it would mean nothing. Thirty pendulum
+  swings with 1% noise fit 6.30; `2*pi` is within three standard errors
+  and is written.
+- A constant is written by name only when the data pin it: moved by 1%,
+  the fit worsens by at least one residual variance per degree of
+  freedom (a relative standard error of at most 1%). A name the snap
+  chose that the data do not pin is written to the digits they support,
+  the fewest significant digits within one standard error: a Cepheid
+  slope known to 2% is `-1.41`, not `-sqrt(2)`. An answer that is no law
+  writes no constant by name.
+  Other names (`7*2**(1/4)`, `sqrt(e)`) still need the data to single
+  them out (see [snapping](#the-selection-criterion)).
+- When a constant inside a function or power moves, the scales and the
+  offset are refitted with it, and the answer is normalized again:
+  `exp(1.5*log(a))` is written `a**(3/2)`.
+
+#### Physical constants
+
+These are written by name, in SI units (CODATA 2018), each as itself,
+twice or half it, or the reciprocal of one of those; a product of two is
+never written by name:
+
+| name | constant | value |
+|---|---|---|
+| `c` | speed of light | 299792458 m/s |
+| `G` | gravitational constant | 6.67430e-11 m³/(kg·s²) |
+| `h`, `hbar` | Planck constant, reduced | 6.62607015e-34, 1.054571817e-34 J·s |
+| `q_e` | elementary charge | 1.602176634e-19 C |
+| `k_B` | Boltzmann constant | 1.380649e-23 J/K |
+| `N_A` | Avogadro constant | 6.02214076e23 /mol |
+| `R` | gas constant | 8.314462618 J/(mol·K) |
+| `F` | Faraday constant | 96485.33212 C/mol |
+| `eps0`, `mu0` | vacuum permittivity, permeability | 8.8541878128e-12 F/m, 1.25663706212e-6 N/A² |
+| `k_e` | Coulomb constant | 8.9875517923e9 N·m²/C² |
+| `sigma_SB` | Stefan–Boltzmann constant | 5.670374419e-8 W/(m²·K⁴) |
+| `b_wien` | Wien displacement constant | 2.897771955e-3 m·K |
+| `m_e`, `m_p`, `m_u` | electron, proton, atomic mass unit | 9.1093837015e-31, 1.67262192369e-27, 1.66053906660e-27 kg |
+| `a0` | Bohr radius | 5.29177210903e-11 m |
+| `R_inf` | Rydberg constant | 10973731.568160 /m |
+| `alpha` | fine-structure constant | 7.2973525693e-3 |
+| `g_n` | standard gravity | 9.80665 m/s² |
+| `atm` | standard atmosphere | 101325 Pa |
+
+The values match only data in these units (and units that share them:
+the gas constant is also 8.314 kPa·L/(mol·K)); in others they are not
+near any fitted value and nothing is written. A name equal to a column's
+name is not written: the constant is printed as a number. Euler's number
+is `e`; the elementary charge is `q_e`.
+
+The cleaned answer is refused only when it would no longer fit: its
+unexplained variance (1 − R² on the training rows) over 10 times the
+fitted answer's and over 1e-6. The `r2`, `largest_miss` and the verdict
+are those of the answer as written. On eight planets to three or four
+digits the fitted `exp(1.4998*log(a))` (r² 0.99999995) is written
+`a**(3/2)` (r² 0.99999953, largest miss 0.10%); the real periods differ
+from it by the planets' own masses.
 
 ## Scoring
 
@@ -415,7 +531,7 @@ Below 80 rows it is the lower of the leave-one-out R² with a refitted
 scale and offset around the answer and the leave-one-out R² with the
 answer's own constants refitted, so an answer printed without an offset
 is not credited with one. From 80 rows it is the held-out R² with a
-refitted scale and offset (the exact threshold is calibrated on it);
+refitted scale and offset (the within-precision threshold is calibrated on it);
 every answer there carries its own fitted scale and offset.
 
 **Constants.** Each answer's constants are refitted on the training rows.
@@ -427,14 +543,14 @@ beyond the rounding, the same on every row. The
 [selection criterion](#the-selection-criterion) keeps whichever of the
 two fits it scores lower. The plain fit is set by the largest values: on
 a decay written to three digits it missed the small rows beyond their
-rounding, and the answer was approximate; the weighted fit lands every
+rounding, and the answer was not within precision; the weighted fit lands every
 row in its cell. Where the noise is well beyond the rounding the weights
 are nearly equal and the two fits agree.
 
 A simple value near a constant is admitted when the fit stays within a
 tolerance:
 
-- on an exact fit, a loss of 1e-13 of R² or the rounding floor,
+- on a fit within precision, a loss of 1e-13 of R² or the rounding floor,
   whichever is larger;
 - otherwise, one standard error of the fitted value.
 
@@ -449,7 +565,7 @@ digits, the denominator's when it is not 1, one for a named constant,
 and one for a power of it other than ±1: `pi` and `2*pi` take two,
 `7*2**(1/4)` and `1/sqrt(2*pi)` three). A fitted 6.285 on a two-digit
 pendulum becomes `2*pi`, which is structural and fits the rows better,
-not `19/3`, which the rounding floor also admits. On an exact fit at the
+not `19/3`, which the rounding floor also admits. On a fit within precision at the
 full-precision tolerance the simplest admitted value is taken without
 the criterion, which there would weigh misses of a few 1e-14 and take
 offsets of that size; so 6.62607015e-34 on cells written to sixteen
@@ -478,7 +594,7 @@ with the constant free. A fitted 1.0104 on 5% noise is written 1.01, not
 `7/(4*sqrt(3))`. A two-digit pendulum keeps `2*pi` because no value as
 short fits as well.
 
-Constants are first snapped one at a time. An answer short of exact then
+Constants are first snapped one at a time. An answer short of the cells' precision then
 has its constants chosen together: each constant inside a function takes
 its fitted value or one of the three nearest structural values its
 change alone admits, each scale and the offset is refitted or set to a
@@ -488,7 +604,7 @@ significant digits, that its change alone admits), and every combination
 with more structural constants than the answer has, and within the
 tolerance, is offered to the criterion alongside the answer as it
 stands (at most 27 inner and 64 outer combinations). On an answer short
-of exact a combination must also write fewer constants (a scale of 1, an
+of the cells' precision a combination must also write fewer constants (a scale of 1, an
 offset of 0): there a snapped value only rounds a fitted one, so 8.31
 on a gas law at 1% noise stays 8.31 rather than becoming `7*2**(1/4)`
 in a joint choice,
@@ -502,13 +618,13 @@ absorbs the change; together, `x1/(4*pi*x2*x3)` on 1% noise is found
 where one at a time left `0.0795*x1/(x2*x3) + 0.0011`. On
 `E = 1239.84/λ` written to six digits, one at a time the offset kept
 −3e-6 and the scale could not then reach 1239.84; together, offset 0 and
-scale 1239.84 land every row in its cell. An exact answer keeps a joint
-choice only if it is still exact.
+scale 1239.84 land every row in its cell. An answer within precision keeps a joint
+choice only if it is still within precision.
 
 **Reductions.** The canonical stage then tries the smaller forms inside
 an answer (drop a term, unwrap a function, drop a factor or an argument
 constant), refitted. A smaller form replaces the answer when it is
-still exact (for an exact answer) and the selection criterion rises by
+still within precision (for an answer within precision) and the selection criterion rises by
 no more than half a nat. On integer-written y = 2x + 1, dropping the
 offset leaves `2.2*x`: inside the rounding floor of whole numbers, but
 it adds a free constant and misses cells that `2*x + 1` hits exactly, so
@@ -544,15 +660,25 @@ one constant) count as equally supported, and the simpler is taken.
 
 ## How answers are ordered
 
-Answers are ordered by verdict: every `exact` answer first, then
-`approximate`, then `no law found`. Within a verdict:
+Answers are ordered: laws within precision first, then the other laws,
+then `no law found`. Laws within precision are ordered by the
+[selection criterion](#the-selection-criterion), lowest first. The other
+laws and the answers that are no law are ordered by a practical
+description length:
 
-by the [selection criterion](#the-selection-criterion), lowest first,
-the search's order breaking ties. An answer holding a saturated function
+    n/2 × ln(max(m², 0.005²)) + ln(n)/2 × (nodes + constants)
+
+where `m` is the rms miss as a fraction of the target's value (of the
+target's spread when it changes sign). Misses under 0.5% of the target
+do not count, so a clean law is not passed over for a longer form that
+fits a small second effect: JPL's 72 moons of Jupiter give
+`6.4621e-9*a**(3/2)` (rms miss 0.125%, Io and Europa off by the Laplace
+resonance), not a three-node longer form at 0.109%. The search's order
+breaks ties. An answer holding a saturated function
 (see rule 4 above) comes after the answers without one.
 
 The verdicts are given to the first 3 × `--top-k` distinct candidates the
-search ranks highest (below 80 rows, exact candidates by fewest free
+search ranks highest (below 80 rows, candidates within precision by fewest free
 constants then fewest nodes, the rest by description length on the
 scoring rows; from 80 rows by description length on the held-out rows),
 before this ordering.
@@ -605,8 +731,8 @@ on 50 and 200 rows. The sum-of-terms step holds up to two sets of 4,000
 prepared library terms, about 128 MB each, on tables of many columns;
 a 35-column table screened to 30 measured 430 MB.
 
-An exact answer ends the search early (`stopped_by: exact_exit`) when its
-canonical form is exact, reduced, holds on the rows at the edges of the
+An answer within precision ends the search early (`stopped_by: exact_exit`) when its
+canonical form is within precision, reduced, holds on the rows at the edges of the
 data, and is well conditioned. Noisy data never ends early: a noisy table
 runs until the search has nothing left to try or the budget is spent,
 which on all but small tables is usually the budget.
@@ -645,7 +771,7 @@ options stop at the same point.
   four reductions (divide out a factor, invert a function, subtract an
   affine part), ending in a monomial, a sparse sum of short terms, or a
   ratio of two such sums. A law outside that space is not found. Its best
-  approximation is reported as `approximate` or `no law found`.
+  approximation is reported as a law not within precision, or as `no law found`.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
   of the answer, but every column widens the search: thirty columns take
   about 7 s and 170 MB to 430 MB even for an easy law
@@ -655,12 +781,21 @@ options stop at the same point.
   within a 10-second budget. The product library uses
   products of up to three columns up to 21 columns and of two beyond.
 - **Rows.** A table needs 5 rows to be searched; a law with k constants
-  needs at least k + 3 rows to be exact. Five rows suffice for a law with
+  needs at least k + 3 rows. Five rows suffice for a law with
   no constant, six for a power law with one. Below 80
   rows the leave-one-out refits make scoring slower in proportion to the
   rows.
-- **Noise.** Noisy data gives `approximate` at best, and the search can
-  spend its whole budget looking for an exact form. Set `--timeout` to
+- **Data spanning orders of magnitude.** Constants are fitted by least
+  squares on the target as written, so where the target spans decades
+  with errors proportional to its size (body weights, event counts, river
+  flows) the largest values decide the fit. A power law or exponential
+  there may be missed (no law found) or replaced by another form: 56
+  perch weighed by length gave `(4/pi)*exp(sqrt(L)) - 20`, not
+  `a*L**3.16`. Check such a law against a log-log plot.
+- **Families the search reaches poorly.** A sinusoid of unknown period
+  (tides) and growth curves (logistic) are often not found.
+- **Noise.** On noisy data no answer is within precision, and the search
+  can spend its whole budget looking for one. Set `--timeout` to
   what you can afford.
 - **Precision of written numbers.** Precision is read from the digits as
   written. Values printed with spurious digits, such as `0.30000000000000004`,

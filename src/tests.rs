@@ -438,6 +438,31 @@ fn end_to_end_power_law_40_rows() {
     assert_eq!(top_structure(&t), "c1*x1**(3/2) + b");
 }
 
+fn precision_verdict(r: &crate::forms::json::Json) -> String {
+    match (
+        r.get("verdict").and_then(|v| v.as_str()),
+        r.get("within_precision").and_then(|v| v.as_bool()),
+    ) {
+        (Some("law"), Some(true)) => "exact".to_string(),
+        (Some("law"), _) => "approximate".to_string(),
+        (Some(v), _) => v.to_string(),
+        _ => String::new(),
+    }
+}
+
+fn run_verdict(j: &crate::forms::json::Json) -> String {
+    match j.get("verdict").and_then(|v| v.as_str()) {
+        Some("law") => j
+            .get("results")
+            .and_then(|r| r.as_arr())
+            .and_then(|r| r.first())
+            .map(precision_verdict)
+            .unwrap_or_default(),
+        Some(v) => v.to_string(),
+        None => String::new(),
+    }
+}
+
 fn top_and_verdict(table: &str) -> (String, String, String) {
     let j = run_json(table);
     let r = j
@@ -450,14 +475,7 @@ fn top_and_verdict(table: &str) -> (String, String, String) {
             .and_then(|r| r.get(k).and_then(|s| s.as_str()).map(|s| s.to_string()))
             .unwrap_or_default()
     };
-    (
-        get("model"),
-        get("structure"),
-        j.get("verdict")
-            .and_then(|v| v.as_str())
-            .unwrap_or("")
-            .to_string(),
-    )
+    (get("model"), get("structure"), run_verdict(&j))
 }
 
 fn same_function(model: &str, ranges: &[(f64, f64)], f: impl Fn(&[f64]) -> f64) -> bool {
@@ -586,7 +604,7 @@ fn rounded_power_law_40_rows_exact_with_floor() {
         top.get("structure").and_then(|s| s.as_str()),
         Some("c1*x1**(3/2) + b")
     );
-    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    assert_eq!(run_verdict(&j), "exact");
     let rows: Vec<(f64, f64)> = t
         .lines()
         .skip(1)
@@ -677,7 +695,7 @@ fn noisy_pendulum_200_rows_snaps_two_pi() {
         "{}",
         named
     );
-    assert_ne!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    assert_ne!(run_verdict(&j), "exact");
 }
 
 #[test]
@@ -723,7 +741,7 @@ fn constant_target_is_the_law_and_few_rows_are_named() {
     let t: String =
         "x,y\n".to_string() + &(0..50).map(|i| format!("{},4.2\n", i)).collect::<String>();
     let j = run_json(&t);
-    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    assert_eq!(run_verdict(&j), "exact");
     let top = j
         .get("results")
         .and_then(|r| r.as_arr())
@@ -778,7 +796,7 @@ fn every_result_has_every_field_and_the_bytes_repeat() {
     let j = crate::forms::json::parse(&a).unwrap();
     assert_eq!(
         j.get("schema").and_then(|v| v.as_str()),
-        Some("keplearn.result.v2")
+        Some("keplearn.result.v3")
     );
     assert!(j.get("time_ms").is_none());
     let keys = [
@@ -798,7 +816,11 @@ fn every_result_has_every_field_and_the_bytes_repeat() {
         "symbolic",
         "named",
         "free_constants",
+        "within_precision",
+        "largest_miss",
+        "largest_miss_at",
     ];
+    assert!(j.get("simpler_law").is_some());
     for r in j.get("results").and_then(|r| r.as_arr()).unwrap() {
         for k in keys {
             assert!(r.get(k).is_some(), "missing {}", k);
@@ -945,7 +967,7 @@ fn small_tables_say_what_their_rows_allow() {
     let mut cfg = test_cfg();
     cfg.target_col = "f".to_string();
     let j = crate::forms::json::parse(&run_text(t, cfg).unwrap()).unwrap();
-    assert_eq!(j.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    assert_eq!(run_verdict(&j), "exact");
 }
 
 #[test]
@@ -1182,8 +1204,19 @@ fn a_wide_span_target_ranks_approximate_answers_by_relative_misses() {
         })
         .collect();
     assert_eq!(named[0], "0.199*distance_1e6km**(3/2)", "{:?}", named);
-    let reason = j.get("reason").and_then(|v| v.as_str()).unwrap_or("");
-    assert!(reason.contains("largest miss"), "{}", reason);
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .unwrap();
+    assert!(top
+        .get("largest_miss")
+        .and_then(|v| v.as_f64())
+        .is_some_and(|m| m > 0.0 && m < 0.05));
+    assert_eq!(
+        top.get("within_precision").and_then(|v| v.as_bool()),
+        Some(false)
+    );
     let summary = crate::summary::render(
         &run_text(&t, {
             let mut c = test_cfg();
@@ -1482,12 +1515,7 @@ fn a_decay_written_to_three_digits_is_exact() {
         .and_then(|r| r.first())
         .cloned()
         .unwrap();
-    assert_eq!(
-        top.get("verdict").and_then(|v| v.as_str()),
-        Some("exact"),
-        "{:?}",
-        top.get("model")
-    );
+    assert_eq!(precision_verdict(&top), "exact", "{:?}", top.get("model"));
     assert_eq!(
         top.get("structure")
             .and_then(|v| v.as_str())
@@ -1518,7 +1546,7 @@ fn an_offset_and_a_scale_are_snapped_together() {
         top.get("model").and_then(|v| v.as_str()),
         Some("1239.84*1/x1")
     );
-    assert_eq!(top.get("verdict").and_then(|v| v.as_str()), Some("exact"));
+    assert_eq!(precision_verdict(&top), "exact");
 }
 
 fn top_of(table: &str) -> (String, String, String) {
@@ -1535,7 +1563,7 @@ fn top_of(table: &str) -> (String, String, String) {
             .unwrap_or("")
             .to_string()
     };
-    (s("model"), s("named"), s("verdict"))
+    (s("model"), s("named"), precision_verdict(&top))
 }
 
 #[test]
@@ -1625,4 +1653,254 @@ fn readings_that_repeat_at_their_precision_are_not_a_design_grid() {
     let grid: Vec<f64> = (0..200).map(|i| 273.15 + 5.0 * (i % 20) as f64).collect();
     let gq = vec![0.01; grid.len()];
     assert!(crate::driver::design_grid(&grid, &gq));
+}
+
+fn real(file: &str, target: &str) -> crate::forms::json::Json {
+    let t = std::fs::read_to_string(format!(
+        "{}/fixtures/real/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        file
+    ))
+    .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = target.to_string();
+    crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap()
+}
+
+fn real_top(j: &crate::forms::json::Json) -> (String, String) {
+    let v = j
+        .get("verdict")
+        .and_then(|v| v.as_str())
+        .unwrap_or("")
+        .to_string();
+    let top = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first());
+    (
+        v,
+        top.and_then(|t| t.get("named"))
+            .and_then(|n| n.as_str())
+            .unwrap_or("")
+            .to_string(),
+    )
+}
+
+#[test]
+fn real_planets_give_keplers_third_law() {
+    let (v, m) = real_top(&real("planets8.csv", "T_yr"));
+    assert_eq!((v.as_str(), m.as_str()), ("law", "a_AU**(3/2)"));
+    for f in ["orbits26.csv", "orbits26_3dec.csv"] {
+        let (v, m) = real_top(&real(f, "period_years"));
+        assert_eq!(
+            (v.as_str(), m.as_str()),
+            ("law", "distance_AU**(3/2)"),
+            "{}",
+            f
+        );
+    }
+}
+
+#[test]
+fn real_pendulum_swings_give_two_pi_root_l_over_g() {
+    let (v, m) = real_top(&real("pendulum200_1pct.csv", "period_s"));
+    assert_eq!(
+        (v.as_str(), m.as_str()),
+        ("law", "(2*pi)*sqrt(length_m)/sqrt(g)")
+    );
+    let (v, m) = real_top(&real("pendulum30_1pct.csv", "period_s"));
+    assert_eq!(
+        (v.as_str(), m.as_str()),
+        ("law", "(2*pi)*sqrt(length_m)/sqrt(g)")
+    );
+}
+
+fn real_summary(file: &str, target: &str) -> String {
+    let t = std::fs::read_to_string(format!(
+        "{}/fixtures/real/{}",
+        env!("CARGO_MANIFEST_DIR"),
+        file
+    ))
+    .unwrap();
+    let mut cfg = test_cfg();
+    cfg.target_col = target.to_string();
+    crate::summary::render(&run_text(&t, cfg).unwrap())
+}
+
+#[test]
+fn real_surface_gravity_shows_the_simpler_law() {
+    let s = real_summary("surface_gravity.tsv", "g_ms2");
+    let line = s
+        .lines()
+        .find(|l| l.starts_with("simpler law: g_ms2 = "))
+        .unwrap_or_else(|| panic!("{}", s));
+    assert!(
+        line.contains("*mass_1e24kg/radius_km**2 (r2 = 0.98") && line.ends_with("1 constant free)"),
+        "{}",
+        s
+    );
+}
+
+#[test]
+fn real_steam_table_fit_that_misses_its_small_pressures_is_refused() {
+    let t = std::fs::read_to_string(format!(
+        "{}/fixtures/real/steam_pressure.tsv",
+        env!("CARGO_MANIFEST_DIR")
+    ))
+    .unwrap();
+    let rows: Vec<(f64, f64)> = t
+        .lines()
+        .skip(1)
+        .map(|l| {
+            let v: Vec<f64> = l.split('\t').map(|x| x.parse().unwrap()).collect();
+            (v[0], v[1])
+        })
+        .collect();
+    let f = vec![rows.iter().map(|r| r.0).collect::<Vec<f64>>()];
+    let y: Vec<f64> = rows.iter().map(|r| r.1).collect();
+    let q: Vec<f64> = vec![1e-4; y.len()];
+    assert_eq!(
+        crate::guard::badly_missed(
+            "0.002229*exp(2.309401076759*x1**(1/3)) + 1",
+            &f,
+            &y,
+            &q,
+            y.len()
+        ),
+        Some((2, 1))
+    );
+    let s = real_summary("steam_pressure.tsv", "P_kPa");
+    assert!(!s.starts_with("P_kPa = 0.002229*exp("), "{}", s);
+    assert!(!s.contains("possibly"), "{}", s);
+}
+
+#[test]
+fn a_narrow_target_with_small_misses_is_a_law() {
+    let mut seed: u64 = 12345;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut t = String::from("x\ty\n");
+    for i in 0..60 {
+        let x = 1.0 + 0.3 * i as f64 / 59.0;
+        let y = 100.0 * x.powf(0.1) * (1.0 + 0.01 * (2.0 * next() - 1.0));
+        t.push_str(&format!("{:.4}\t{:.3}\n", x, y));
+    }
+    let mut cfg = test_cfg();
+    cfg.target_col = "y".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    let r2 = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .and_then(|r| r.get("r2"))
+        .and_then(|v| v.as_f64())
+        .unwrap_or(1.0);
+    assert!(r2 < 0.9, "r2 {}", r2);
+    assert_eq!(real_top(&j).0, "law");
+}
+
+#[test]
+fn real_boyle_gives_pressure_inverse_to_volume() {
+    let (v, m) = real_top(&real("boyle_1662.tsv", "pressure"));
+    let k: f64 = m.split('*').next().unwrap_or("").parse().unwrap_or(0.0);
+    assert!(
+        v == "law" && m.ends_with("*1/volume") && (1390.0..1420.0).contains(&k),
+        "{} {}",
+        v,
+        m
+    );
+}
+
+#[test]
+fn real_scatter_is_no_law() {
+    for (f, t) in [
+        ("hubble_1929.tsv", "velocity_kms"),
+        ("cars_stopping.csv", "dist_ft"),
+    ] {
+        let j = real(f, t);
+        let (v, m) = real_top(&j);
+        assert_eq!(v, "no law found", "{}: {}", f, m);
+        let reason = j.get("reason").and_then(|r| r.as_str()).unwrap_or("");
+        assert!(
+            reason.contains("explains less than 90%")
+                || reason.contains("does not beat a constant"),
+            "{}: {}",
+            f,
+            reason
+        );
+    }
+}
+
+#[test]
+fn physical_constants_are_named_once_and_never_over_a_column() {
+    use crate::forms::nf::physical_constant;
+    let n = |v: f64| physical_constant(v).map(|(t, _)| t);
+    assert_eq!(n(1.380_649e-23 * 6.022_140_76e23).as_deref(), Some("R"));
+    assert_eq!(n(1.0 / 299_792_458.0).as_deref(), Some("1/c"));
+    assert_eq!(n(2.0 * 6.674_30e-11).as_deref(), Some("2*G"));
+    assert_eq!(n(-9.806_65).as_deref(), Some("-g_n"));
+    assert_eq!(n(6.674_30e-11 * 299_792_458.0), None);
+    assert_eq!(
+        crate::output::symbolic_model("6.6743e-11*x1", &["M".to_string()]),
+        "G*x1"
+    );
+    assert_eq!(
+        crate::output::symbolic_model("6.6743e-11*x1", &["G".to_string()]),
+        "6.6743e-11*x1"
+    );
+}
+
+#[test]
+fn a_noisy_ideal_gas_in_si_units_gives_r() {
+    let mut seed: u64 = 777;
+    let mut next = || {
+        seed = seed
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (seed >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut t = String::from("T\tV\tP\n");
+    for _ in 0..80 {
+        let (temp, vol) = (250.0 + 150.0 * next(), 0.01 + 0.04 * next());
+        let p = 8.314_462_618 * temp / vol * (1.0 + 0.01 * (2.0 * next() - 1.0));
+        t.push_str(&format!("{:.1}\t{:.4}\t{:.0}\n", temp, vol, p));
+    }
+    let mut cfg = test_cfg();
+    cfg.target_col = "P".to_string();
+    let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
+    assert_eq!(real_top(&j), ("law".to_string(), "R*T/V".to_string()));
+}
+
+#[test]
+fn real_jupiter_moons_give_keplers_law_over_a_longer_form() {
+    let (v, m) = real_top(&real("jupiter_moons.tsv", "P_days"));
+    let one_term = m
+        .split_once('*')
+        .is_some_and(|(k, rest)| k.parse::<f64>().is_ok() && rest == "a_km**(3/2)");
+    assert!(v == "law" && one_term, "{} {}", v, m);
+}
+
+#[test]
+fn cleaning_never_takes_an_answer_out_of_the_cells_precision() {
+    let mut s = 5u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        0.5 + 2.5 * ((s >> 11) as f64 / (1u64 << 53) as f64)
+    };
+    let mut t = String::from("x\ty\n");
+    for _ in 0..60 {
+        let x = next();
+        t.push_str(&format!("{:.12}\t{:.12}\n", x, 1.0006 * x * x));
+    }
+    let (model, _, verdict) = top_of(&t);
+    assert_eq!(
+        (model.as_str(), verdict.as_str()),
+        ("1.0006*x1**2", "exact")
+    );
 }

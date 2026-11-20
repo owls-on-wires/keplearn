@@ -426,6 +426,46 @@ pub(crate) const OFFSET_BASIS_CAP: usize = 8;
 /// most this many significant digits (0.25, 1.5, 120): a column of
 /// six-digit values is a set of measurements.
 pub(crate) const SETTING_MAX_DIGITS: usize = 3;
+/// The least share of the target's variance a law explains (its r² on
+/// every row): below it the answer is reported as the best fit, not a law.
+pub(crate) const LAW_MIN_R2: f64 = 0.9;
+/// A common physical constant (pi, 2*pi, e, ...) replaces a fitted value
+/// when the unexplained variance rises by at most this many times the
+/// residual variance per degree of freedom: three standard errors (these
+/// constants are common enough in laws to be preferred on weak evidence).
+pub(crate) const COMMON_Z2: f64 = 9.0;
+/// A constant is written by name only when the data pin it to this
+/// relative standard error (`guard::clean_answer`).
+pub(crate) const NAME_MAX_REL_SE: f64 = 0.01;
+/// A law fits reasonably well when its r² is at least LAW_MIN_R2, or, for a
+/// target of one sign, its median miss is at most LAW_MAX_MEDIAN_MISS of
+/// the target's value.
+pub(crate) const LAW_MAX_MEDIAN_MISS: f64 = 0.05;
+/// A law may miss at most max(1, LAW_BAD_ROWS of the rows) by more than
+/// LAW_BAD_MISS of the target's value (beyond the cell's quantum), when
+/// the target keeps one sign.
+pub(crate) const LAW_BAD_MISS: f64 = 0.25;
+pub(crate) const LAW_BAD_ROWS: f64 = 0.05;
+/// Laws short of the cells' precision are ranked with misses under this
+/// fraction of the target's value not counted (`guard::practical_dl`).
+pub(crate) const RANK_NOISE_FLOOR: f64 = 0.005;
+/// The simpler law the summary shows under the first answer: fewer
+/// constants and an r² of at least this.
+pub(crate) const SIMPLER_MIN_R2: f64 = 0.98;
+/// An answer's fitted constant within this fraction of a simple value (one
+/// or two significant digits, or a small fraction) is written as that
+/// value, and an offset under this fraction of the target's mean size is
+/// dropped (`guard::clean_answer`).
+pub(crate) const CLEAN_REL: f64 = 1e-3;
+/// An answer within the cells' precision is not cleaned when the cleaned
+/// form's rms miss would be over this many times the target's written
+/// precision (its cells' median relative quantum).
+pub(crate) const CLEAN_PRECISION_K: f64 = 10.0;
+/// The clean answer is refused where its unexplained variance is over
+/// CLEAN_LOSS_MAX times the fit's and over CLEAN_LOSS_ABS of the target's
+/// variance: rounded, it would no longer fit reasonably.
+pub(crate) const CLEAN_LOSS_MAX: f64 = 10.0;
+pub(crate) const CLEAN_LOSS_ABS: f64 = 1e-6;
 /// A design grid's distinct values lie at least this many written quanta
 /// apart (median gap); densely drawn readings lie one quantum apart.
 pub(crate) const GRID_MIN_GAP: f64 = 2.0;

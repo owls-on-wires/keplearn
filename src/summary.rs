@@ -42,9 +42,8 @@ pub fn render(json: &str) -> String {
     match results.first() {
         Some(top) if verdict != "no law found" => {
             let line = format!("{} = {}", target, law(top));
-            let r2 = f(top, "r2").map_or("= undefined".to_string(), |r| {
-                r2_text(r, verdict == "exact")
-            });
+            let within = top.get("within_precision").and_then(|v| v.as_bool()) == Some(true);
+            let r2 = f(top, "r2").map_or("= undefined".to_string(), |r| r2_text(r, within));
             out.push_str(&format!(
                 "{:<w$}  {} (r2 {}, {})\n",
                 line,
@@ -66,8 +65,52 @@ pub fn render(json: &str) -> String {
             }
             out.push_str(&c);
             out.push('\n');
-            if verdict != "exact" && !s(&j, "reason").is_empty() {
-                out.push_str(&format!("why not exact: {}\n", s(&j, "reason")));
+            let miss = f(top, "largest_miss").filter(|m| *m > 0.0).map(|m| {
+                let at = f(top, "largest_miss_at").map_or(String::new(), |y| {
+                    format!(
+                        " (where the target is {})",
+                        crate::output::tidy_number(y, 6)
+                    )
+                });
+                format!(
+                    "largest miss {} of the target's value{}",
+                    percent_text(100.0 * m),
+                    at
+                )
+            });
+            let fit = match (miss, within) {
+                (Some(m), true) => {
+                    format!("fit: {}, within the precision the cells are written to", m)
+                }
+                (Some(m), false) => {
+                    format!(
+                        "fit: {}, more than the precision the cells are written to", m
+                    )
+                }
+                (None, true) => {
+                    "fit: every row to the precision its cells are written to"
+                        .to_string()
+                }
+                (None, false) => {
+                    "fit: more than the precision the cells are written to (the target is 0 on some rows, so no miss is given as a fraction of it)"
+                        .to_string()
+                }
+            };
+            out.push_str(&fit);
+            out.push('\n');
+            let n_free = |r: &Json| f(r, "free_constants").map_or(usize::MAX, |v| v as usize);
+            if let Some(r) = f(&j, "simpler_law").and_then(|i| results.get(i as usize)) {
+                out.push_str(&format!(
+                    "simpler law: {} = {} (r2 {}, {})\n",
+                    target,
+                    law(r),
+                    r2_text(f(r, "r2").unwrap_or(0.0), false),
+                    match n_free(r) {
+                        0 => "no constant free".to_string(),
+                        1 => "1 constant free".to_string(),
+                        k => format!("{} constants free", k),
+                    }
+                ));
             }
         }
         _ => {
@@ -101,12 +144,20 @@ pub fn render(json: &str) -> String {
     } else {
         "full precision".to_string()
     };
-    out.push_str(&format!(
-        "data: {}, {}; {}\n",
-        plural(rows, "row"),
-        plural(cols, "column"),
-        precision
-    ));
+    if verdict == "no law found" {
+        out.push_str(&format!(
+            "data: {}, {}\n",
+            plural(rows, "row"),
+            plural(cols, "column")
+        ));
+    } else {
+        out.push_str(&format!(
+            "data: {}, {}; {}\n",
+            plural(rows, "row"),
+            plural(cols, "column"),
+            precision
+        ));
+    }
     if let Some(second) = results.get(1).filter(|r| !s(r, "named").is_empty()) {
         out.push_str(&format!(
             "next best: {} = {}    {}\n",
@@ -137,6 +188,15 @@ fn r2_text(r: f64, exact: bool) -> String {
         d += 2;
     }
     format!("= {:.*}", d, r)
+}
+
+fn percent_text(p: f64) -> String {
+    let d = if p >= 1.0 {
+        2
+    } else {
+        (2 - p.log10().floor() as i32).clamp(2, 12) as usize
+    };
+    format!("{:.*}%", d, p)
 }
 
 fn plural(n: usize, w: &str) -> String {

@@ -308,8 +308,19 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
         }
     };
     for &(base, name, powers, full) in SNAP_FAMILIES {
-        for &k in powers {
+        for k in powers
+            .iter()
+            .copied()
+            .filter(|k| *k > 0.0)
+            .chain(powers.iter().rev().copied().filter(|k| *k < 0.0))
+        {
             let b = base.powf(k);
+            if (1..=12).any(|q: i32| {
+                let x = b * q as f64;
+                (x - x.round()).abs() <= 1e-12 * x.abs()
+            }) {
+                continue;
+            }
             for den in SNAP_DENOMS {
                 let num = (v / b * den as f64).round();
                 if num == 0.0 || num.abs() > SNAP_MULT_MAX || !close(num / den as f64 * b) {
@@ -349,6 +360,71 @@ pub fn symbolic_constant(v: f64) -> Option<String> {
                     }
                 };
                 return Some(format!("{}{}", sign, text));
+            }
+        }
+    }
+    None
+}
+
+pub const PHYSICAL: &[(f64, &str)] = &[
+    (299_792_458.0, "c"),
+    (6.674_30e-11, "G"),
+    (6.626_070_15e-34, "h"),
+    (6.626_070_15e-34 / std::f64::consts::TAU, "hbar"),
+    (1.602_176_634e-19, "q_e"),
+    (1.380_649e-23, "k_B"),
+    (6.022_140_76e23, "N_A"),
+    (1.380_649e-23 * 6.022_140_76e23, "R"),
+    (96_485.332_12, "F"),
+    (8.854_187_812_8e-12, "eps0"),
+    (1.256_637_062_12e-6, "mu0"),
+    (8.987_551_792_3e9, "k_e"),
+    (5.670_374_419e-8, "sigma_SB"),
+    (2.897_771_955e-3, "b_wien"),
+    (9.109_383_701_5e-31, "m_e"),
+    (1.672_621_923_69e-27, "m_p"),
+    (1.660_539_066_60e-27, "m_u"),
+    (5.291_772_109_03e-11, "a0"),
+    (10_973_731.568_160, "R_inf"),
+    (7.297_352_569_3e-3, "alpha"),
+    (9.806_65, "g_n"),
+    (101_325.0, "atm"),
+];
+
+pub fn physical_multiples() -> Vec<f64> {
+    PHYSICAL
+        .iter()
+        .flat_map(|&(v, _)| {
+            [1.0, 2.0, 0.5]
+                .into_iter()
+                .flat_map(move |m| [m * v, 1.0 / (m * v)])
+        })
+        .collect()
+}
+
+pub fn physical_constant(v: f64) -> Option<(String, &'static str)> {
+    if !v.is_finite() || v == 0.0 {
+        return None;
+    }
+    let a = v.abs();
+    let sign = if v < 0.0 { "-" } else { "" };
+    for &(c, n) in PHYSICAL {
+        for m in [1.0, 2.0, 0.5] {
+            if (m * c - a).abs() <= 1e-12 * a {
+                let t = match m {
+                    x if x == 1.0 => n.to_string(),
+                    x if x == 2.0 => format!("2*{}", n),
+                    _ => format!("{}/2", n),
+                };
+                return Some((format!("{}{}", sign, t), n));
+            }
+            if (1.0 / (m * c) - a).abs() <= 1e-12 * a {
+                let t = match m {
+                    x if x == 1.0 => format!("1/{}", n),
+                    x if x == 2.0 => format!("1/(2*{})", n),
+                    _ => format!("2/{}", n),
+                };
+                return Some((format!("{}{}", sign, t), n));
             }
         }
     }
