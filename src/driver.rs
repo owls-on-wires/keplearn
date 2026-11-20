@@ -1709,16 +1709,17 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
                 _ => v,
             };
-            let v = match crate::guard::badly_missed(
-                &c.model, &features, &target, &q_target, n_rows,
-            ) {
+            let missed =
+                crate::guard::badly_missed(&c.model, &features, &target, &q_target, n_rows);
+            let v = match missed {
                 Some((bad, allowed)) if v != "no law found" && bad > allowed => {
-                    why = Some(format!(
-                        "the best fit misses {} of {} rows by more than {}% of the target's value",
-                        bad,
-                        (0..n_rows).filter(|&i| target[i].is_finite()).count(),
-                        (100.0 * crate::config::LAW_BAD_MISS).round()
-                    ));
+                    let rows = (0..n_rows).filter(|&i| target[i].is_finite()).count();
+                    let pct = (100.0 * crate::config::LAW_BAD_MISS).round();
+                    why = Some(
+                        format!(
+                            "the best fit misses {bad} of {rows} rows by more than {pct}% of the target's value"
+                        ),
+                    );
                     "no law found"
                 }
                 _ => v,
