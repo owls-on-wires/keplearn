@@ -2,6 +2,7 @@ use keplearn::{run, write_stdout, Config};
 use std::env;
 use std::io::IsTerminal;
 
+#[cfg(any(target_os = "linux", target_os = "macos"))]
 extern "C" fn check_stdout() {
     let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(1) };
     if fd
