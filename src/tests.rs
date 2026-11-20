@@ -1873,6 +1873,13 @@ fn a_noisy_ideal_gas_in_si_units_gives_r() {
     cfg.target_col = "P".to_string();
     let j = crate::forms::json::parse(&run_text(&t, cfg).unwrap()).unwrap();
     assert_eq!(real_top(&j), ("law".to_string(), "R*T/V".to_string()));
+    let free = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .and_then(|r| r.get("free_constants"))
+        .and_then(|f| f.as_f64());
+    assert_eq!(free, Some(0.0));
 }
 
 #[test]
@@ -1902,5 +1909,44 @@ fn cleaning_never_takes_an_answer_out_of_the_cells_precision() {
     assert_eq!(
         (model.as_str(), verdict.as_str()),
         ("1.0006*x1**2", "exact")
+    );
+}
+
+#[test]
+fn a_named_physical_constant_is_not_free() {
+    let mut t = String::from("f\tE\n");
+    for i in 0..30 {
+        let f = 1e14 * (1.0 + 0.3 * i as f64);
+        let e = 6.62607015e-34 * f;
+        t.push_str(&format!("{:.5e}\t{:.5e}\n", f, e));
+    }
+    let mut cfg = test_cfg();
+    cfg.target_col = "E".to_string();
+    let out = run_text(&t, cfg).unwrap();
+    let j = crate::forms::json::parse(&out).unwrap();
+    let r = j
+        .get("results")
+        .and_then(|r| r.as_arr())
+        .and_then(|r| r.first())
+        .cloned()
+        .unwrap();
+    let named = r
+        .get("named")
+        .and_then(|n| n.as_str())
+        .unwrap_or("")
+        .to_string();
+    let free = r.get("free_constants").and_then(|n| n.as_f64());
+    assert_eq!((named.as_str(), free), ("h*f", Some(0.0)), "{}", out);
+}
+
+#[test]
+fn a_constant_fitted_short_of_its_best_value_is_still_named() {
+    let j = real("pendulum50_5pct.tsv", "T");
+    let (v, m) = real_top(&j);
+    assert_eq!((v.as_str(), m.as_str()), ("law", "(2*pi)*sqrt(L)/sqrt(g)"));
+    assert!(
+        matches!(j.get("simpler_law"), Some(crate::forms::json::Json::Null)),
+        "{:?}",
+        j.get("simpler_law")
     );
 }

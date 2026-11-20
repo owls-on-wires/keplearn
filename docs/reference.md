@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 2.0.0, result schema `keplearn.result.v3`.
+Version 2.0.1, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -150,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.0.0`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.0.1`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -170,7 +170,7 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `results` | array | the answers, best first (see [ordering](#how-answers-are-ordered)), at most `--top-k` |
 | `verdict` | string | the first answer's verdict: `law` or `no law found` (see [verdicts](#verdicts)) |
 | `reason` | string or null | why no law was found; null for a law |
-| `simpler_law` | integer or null | when the first answer is a law: the index in `results` of a later law with fewer free constants and an `r2` of at least 0.98 (the fewest constants, then the highest `r2`); a second effect in real data can put a longer law first (the giants' rotation in NASA's surface gravities), and this keeps the simpler one in view. Null otherwise |
+| `simpler_law` | integer or null | when the first answer is a law: the index in `results` of a later law with fewer free constants, no more nodes and an `r2` of at least 0.98 (the fewest constants, then the highest `r2`); a second effect in real data can put a longer law first (the giants' rotation in NASA's surface gravities), and this keeps the simpler one in view. Null otherwise |
 | `stopped_by` | string | `exact_exit` (an answer within the cells' precision ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) or `memory` (the heap reached 75% of `--max-memory`) |
 | `validation` | string | `holdout` (80 rows or more) or `leave-one-out` (fewer); see [scoring](#scoring) |
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
@@ -457,7 +457,7 @@ is taken as noisy, and a law is what is wanted.
   function or beside an offset it would mean nothing. Thirty pendulum
   swings with 1% noise fit 6.30; `2*pi` is within three standard errors
   and is written.
-- A constant is written by name only when the data pin it: moved by 1%,
+- A constant is written by name only when the data pin it: moved by 1% either way from its best value,
   the fit worsens by at least one residual variance per degree of
   freedom (a relative standard error of at most 1%). A name the snap
   chose that the data do not pin is written to the digits they support,

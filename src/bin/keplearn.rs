@@ -46,8 +46,9 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v3):
   results       up to --top-k answers; each has every field below
   verdict       the first answer's verdict: law or no law found
   reason        why no law was found, or null
-  simpler_law   index in results of a law with fewer free constants
-                and r2 of at least 0.98, when the first is a law; or null
+  simpler_law   index in results of a law with fewer free constants, no
+                more nodes and r2 of at least 0.98, when the first is a
+                law; or null
   stopped_by    exact_exit | frontier_exhausted | timeout | memory
   validation    holdout (80 rows or more: a quarter of the rows, at
                 most 2000, held out) or leave-one-out (fewer rows)

@@ -114,6 +114,29 @@ fn clean_answer(
         .copied()
         .chain(crate::forms::nf::physical_multiples())
         .collect();
+    let pin = |c: &Fitted, inner: bool, k: usize| -> Option<(f64, f64)> {
+        let v = if inner { c.inner[k] } else { c.coef[k] };
+        let at = |x: f64| -> Option<f64> {
+            let mut t = c.clone();
+            if inner {
+                t.inner[k] = x;
+                if !refit_linear(&e, &cols, y, &mut t) {
+                    return None;
+                }
+            } else {
+                t.coef[k] = x;
+            }
+            Some(unexplained(&e, &t)).filter(|u| u.is_finite())
+        };
+        let d = crate::config::NAME_MAX_REL_SE;
+        let (u0, up, dn) = (unexplained(&e, c), at(v * (1.0 + d))?, at(v * (1.0 - d))?);
+        let rise = (up + dn) / 2.0 - u0;
+        if !(rise > 0.0) {
+            return None;
+        }
+        let slope = (up - dn) / 2.0;
+        Some(((u0 - slope * slope / (4.0 * rise)).max(0.0), rise))
+    };
     let name_slots = |c: &mut Fitted, inner: bool| -> bool {
         let rows = (0..y.len()).filter(|&r| y[r].is_finite()).count();
         let free = c.coef.iter().filter(|v| !structural_constant(**v)).count()
@@ -146,20 +169,14 @@ fn clean_answer(
             } else {
                 trial.coef[k] = name;
             }
-            let (u_old, u_new) = (unexplained(&e, c), unexplained(&e, &trial));
-            let mut moved = c.clone();
-            if inner {
-                moved.inner[k] = v * (1.0 + crate::config::NAME_MAX_REL_SE);
-                if !refit_linear(&e, &cols, y, &mut moved) {
-                    continue;
-                }
-            } else {
-                moved.coef[k] = v * (1.0 + crate::config::NAME_MAX_REL_SE);
-            }
-            let pinned = unexplained(&e, &moved) - u_old >= u_old / dof;
+            let u_new = unexplained(&e, &trial);
+            let Some((u_min, rise)) = pin(c, inner, k) else {
+                continue;
+            };
+            let pinned = rise >= u_min / dof;
             if pinned
                 && u_new.is_finite()
-                && u_new - u_old <= crate::config::COMMON_Z2 * u_old / dof
+                && u_new - u_min <= crate::config::COMMON_Z2 * u_min / dof
             {
                 *c = trial;
                 any = true;
@@ -210,11 +227,9 @@ fn clean_answer(
                 }
             };
             let u0 = unexplained(&e, c);
-            let Some(moved) = set(c, v * (1.0 + crate::config::NAME_MAX_REL_SE)) else {
-                continue;
-            };
-            if unexplained(&e, &moved) - u0 >= u0 / dof {
-                continue;
+            match pin(c, inner, k) {
+                Some((u_min, rise)) if rise < u_min / dof => {}
+                _ => continue,
             }
             for d in 1..=4 {
                 let m = 10f64.powi(d - 1 - v.abs().log10().floor() as i32);
@@ -775,6 +790,9 @@ fn tame_scales(a: crate::forms::ast::Ast) -> crate::forms::ast::Ast {
     use crate::forms::ast::Ast;
     fn factor(a: Ast) -> Ast {
         match a {
+            Ast::Num(v) if v.is_finite() && crate::forms::nf::physical_constant(v).is_some() => {
+                Ast::Num(std::f64::consts::PI.copysign(v))
+            }
             Ast::Num(v) if v != 0.0 && v.is_finite() && (v.abs() < 1e-6 || v.abs() > 1e6) => {
                 Ast::Num(TAMED_SCALE.copysign(v))
             }

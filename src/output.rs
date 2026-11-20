@@ -349,11 +349,19 @@ impl ResultObj {
 fn simpler_law(results: &[ResultObj]) -> Option<usize> {
     let top = results.first().filter(|r| r.verdict == "law")?;
     let free = |r: &ResultObj| r.free_constants.unwrap_or(usize::MAX);
+    let nodes = |r: &ResultObj| {
+        crate::forms::ast::parse(&r.model)
+            .ok()
+            .and_then(|a| crate::forms::canon::normalize(&a).ok())
+            .map_or(usize::MAX, |(e, _)| e.nodes())
+    };
+    let top_nodes = nodes(top);
     (1..results.len())
         .filter(|&i| {
             let r = &results[i];
             r.verdict == "law"
                 && free(r) < free(top)
+                && nodes(r) <= top_nodes
                 && r.r2.is_some_and(|v| v >= crate::config::SIMPLER_MIN_R2)
         })
         .min_by(|&a, &b| {

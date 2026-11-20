@@ -1,5 +1,18 @@
 # Changelog
 
+## 2.0.1
+
+- A named physical constant is not a free constant: `E = h*f` reports
+  none free (a scale below 1e-6 was counted before the name was seen).
+- Whether the data pin a constant to 1% is judged around its best value,
+  moved either way: a fitted value short of the least-squares one (a
+  weighted fit) was judged by the side it lay on. Fifty pendulum swings
+  with 5% noise give `(2*pi)*sqrt(L)/sqrt(g)`, not 6.207.
+- `simpler_law` points only to a law no larger in its form than the
+  first answer (not `(2*pi)*sqrt(L)*tanh(g)/sqrt(g)`, a factor that saved
+  a constant).
+- Acceptance test: the 5% pendulum (`fixtures/real/pendulum50_5pct.tsv`).
+
 ## 2.0.0
 
 Keplearn is a quick check for a clean law: feed it a table, get the law
