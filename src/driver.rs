@@ -1128,7 +1128,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
             }
         }
-        for mh in mono_fit(&inputs, &node.target, sample_n) {
+        for mh in mono_fit(&inputs, &node.target, sample_n, node.depth == 0) {
             if let Some(c) = build_candidate(&node.chain, &node.desc, &mh, &node.vcols, n_cols) {
                 if c.gate_r2 > best_gate {
                     best_gate = c.gate_r2;

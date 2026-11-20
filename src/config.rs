@@ -167,10 +167,16 @@ pub(crate) const FEW_MULT_BASES: &[f64] = &[
 pub(crate) const SNAP_DENOMS: &[u32] = &[1, 2, 3, 4, 6, 8, 12];
 
 /// Monomial exponent snapping: each fitted log-linear exponent βᵢ snaps to the
-/// nearest of the grammar's exponents (`Q::ALL`) or 0 (math::snap_exp; 0.1
+/// nearest of the grammar's exponents (`Q::ALL`) or 0 (math::snap_exp_within; 0.1
 /// snapped to p/q with q ≤ 4). EXP_SNAP_TOL is
 /// the max |βᵢ − q| for the fit to count as clean.
 pub(crate) const EXP_SNAP_TOL: f64 = 0.06;
+/// A noisy power law's exponent snaps within EXP_SNAP_Z standard errors of
+/// its log-linear fit, when that is wider than EXP_SNAP_TOL (−2.21 ± 0.15
+/// is −2 on eight planets' surface gravity), and never wider than
+/// EXP_SNAP_MAX (half the grammar's integer spacing).
+pub(crate) const EXP_SNAP_Z: f64 = 2.0;
+pub(crate) const EXP_SNAP_MAX: f64 = 0.5;
 
 // ── Structural pre-signals (self-selecting capability deployment) ────────────
 
@@ -213,6 +219,19 @@ pub(crate) const NICE_TIE_SLACK: f64 = 1e-6;
 pub(crate) const MONO_FIT_MIN_ARITY: usize = 1;
 /// mono_fit: minimum r² for a rounded-exponent monomial to be emitted as a finalist.
 pub(crate) const MONO_FIT_MIN_R2: f64 = 0.995;
+/// mono_fit on the target as given (the search's root): a power law is a
+/// candidate from the r² a law needs, since the data are taken as noisy.
+pub(crate) const MONO_FIT_ROOT_MIN_R2: f64 = 0.9;
+/// Below MONO_FIT_MIN_R2 such a power law is kept only when its residuals
+/// look like noise: residuals of nearest-neighbour rows (in the logs of
+/// the inputs) no closer than chance, by a permutation test at this level.
+/// A missed shape leaves neighbours missed alike (p 0 on 4000 rows of
+/// Feynman II.24.17 fitted as a power law); eight planets' surface
+/// gravities give p 0.08.
+pub(crate) const LACK_OF_FIT_P: f64 = 0.01;
+/// Rows and permutations of that test.
+pub(crate) const LACK_OF_FIT_ROWS: usize = 400;
+pub(crate) const LACK_OF_FIT_PERMS: usize = 1000;
 /// Materialized pair-column (mat_pair_ops) minimum |r| to keep as a virtual column.
 pub(crate) const PAIR_VCOL_MIN_R2: f64 = 0.15;
 

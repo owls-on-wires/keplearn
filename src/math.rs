@@ -415,7 +415,7 @@ pub(crate) fn snap_value(v: f64) -> Option<f64> {
     best.map(|(_, s)| if v < 0.0 { -s } else { s })
 }
 
-pub(crate) fn snap_exp(b: f64) -> Option<f64> {
+pub(crate) fn snap_exp_within(b: f64, tol: f64) -> Option<f64> {
     if !b.is_finite() {
         return None;
     }
@@ -427,9 +427,120 @@ pub(crate) fn snap_exp(b: f64) -> Option<f64> {
         }
     }
     match best {
-        Some((r, s)) if r <= EXP_SNAP_TOL => Some(s),
+        Some((r, s)) if r <= tol => Some(s),
         _ => None,
     }
+}
+
+pub(crate) fn ls_std_errors(basis: &[Vec<f64>], y: &[f64], sol: &[f64]) -> Option<Vec<f64>> {
+    let k = basis.len();
+    let m = k + 1;
+    let mut ata = vec![vec![0.0f64; m]; m];
+    let mut ssr = 0.0f64;
+    let mut rows = 0usize;
+    let mut x = vec![0.0f64; m];
+    for r in 0..y.len() {
+        if !y[r].is_finite() || basis.iter().any(|b| !b[r].is_finite()) {
+            continue;
+        }
+        for (i, b) in basis.iter().enumerate() {
+            x[i] = b[r];
+        }
+        x[k] = 1.0;
+        for i in 0..m {
+            for j in 0..m {
+                ata[i][j] += x[i] * x[j];
+            }
+        }
+        let p: f64 = x.iter().zip(sol).map(|(a, b)| a * b).sum();
+        ssr += (y[r] - p).powi(2);
+        rows += 1;
+    }
+    if rows <= m {
+        return None;
+    }
+    let s2 = ssr / (rows - m) as f64;
+    let mut inv: Vec<Vec<f64>> = (0..m)
+        .map(|i| (0..m).map(|j| f64::from(i == j)).collect())
+        .collect();
+    for col in 0..m {
+        let piv = (col..m).max_by(|&a, &b| ata[a][col].abs().total_cmp(&ata[b][col].abs()))?;
+        if ata[piv][col].abs() < 1e-12 {
+            return None;
+        }
+        ata.swap(col, piv);
+        inv.swap(col, piv);
+        let d = ata[col][col];
+        for c in 0..m {
+            ata[col][c] /= d;
+            inv[col][c] /= d;
+        }
+        for r in 0..m {
+            if r != col {
+                let f = ata[r][col];
+                if f != 0.0 {
+                    for c in 0..m {
+                        ata[r][c] -= f * ata[col][c];
+                        inv[r][c] -= f * inv[col][c];
+                    }
+                }
+            }
+        }
+    }
+    let se: Vec<f64> = (0..m).map(|i| (s2 * inv[i][i]).max(0.0).sqrt()).collect();
+    se.iter().all(|v| v.is_finite()).then_some(se)
+}
+
+pub(crate) fn residuals_structured(basis: &[Vec<f64>], e: &[f64]) -> Option<bool> {
+    use crate::config::{LACK_OF_FIT_P, LACK_OF_FIT_PERMS, LACK_OF_FIT_ROWS};
+    let rows: Vec<usize> = (0..e.len())
+        .filter(|&r| e[r].is_finite() && basis.iter().all(|b| b[r].is_finite()))
+        .take(LACK_OF_FIT_ROWS)
+        .collect();
+    let n = rows.len();
+    if n < 4 {
+        return None;
+    }
+    let z: Vec<Vec<f64>> = basis
+        .iter()
+        .map(|b| {
+            let m = rows.iter().map(|&r| b[r]).sum::<f64>() / n as f64;
+            let sd = (rows.iter().map(|&r| (b[r] - m).powi(2)).sum::<f64>() / n as f64).sqrt();
+            rows.iter()
+                .map(|&r| if sd > 0.0 { (b[r] - m) / sd } else { 0.0 })
+                .collect()
+        })
+        .collect();
+    let nn: Vec<usize> = (0..n)
+        .map(|i| {
+            (0..n)
+                .filter(|&j| j != i)
+                .min_by(|&a, &b| {
+                    let d = |j: usize| z.iter().map(|c| (c[i] - c[j]).powi(2)).sum::<f64>();
+                    d(a).total_cmp(&d(b))
+                })
+                .unwrap_or(i)
+        })
+        .collect();
+    let mut v: Vec<f64> = rows.iter().map(|&r| e[r]).collect();
+    let stat = |v: &[f64]| (0..n).map(|i| (v[i] - v[nn[i]]).powi(2)).sum::<f64>();
+    let observed = stat(&v);
+    let mut seed: u64 = 0x9E37_79B9_7F4A_7C15;
+    let mut as_close = 0usize;
+    for _ in 0..LACK_OF_FIT_PERMS {
+        for i in (1..n).rev() {
+            seed = seed
+                .wrapping_mul(6364136223846793005)
+                .wrapping_add(1442695040888963407);
+            let j = ((seed >> 33) as usize) % (i + 1);
+            v.swap(i, j);
+        }
+        if stat(&v) <= observed {
+            as_close += 1;
+        }
+    }
+    let p = (1 + as_close) as f64 / (1 + LACK_OF_FIT_PERMS) as f64;
+    Some(p < LACK_OF_FIT_P)
 }
 
 pub(crate) fn solve_ls(basis: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {

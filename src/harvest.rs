@@ -94,7 +94,12 @@ pub(crate) fn harvest_monomial_vcols(
     out
 }
 
-pub(crate) fn mono_fit(inputs: &[&[f64]], target: &[f64], sample_n: usize) -> Vec<Hit> {
+pub(crate) fn mono_fit(inputs: &[&[f64]], target: &[f64], sample_n: usize, root: bool) -> Vec<Hit> {
+    let min_r2 = if root {
+        MONO_FIT_ROOT_MIN_R2
+    } else {
+        MONO_FIT_MIN_R2
+    };
     let eps = 1e-12;
     let sn = sample_n.min(target.len());
     let k = inputs.len();
@@ -124,11 +129,19 @@ pub(crate) fn mono_fit(inputs: &[&[f64]], target: &[f64], sample_n: usize) -> Ve
         let Some(sol) = solve_ls(&basis, &ly) else {
             continue;
         };
+        let se = if root {
+            crate::math::ls_std_errors(&basis, &ly, &sol)
+        } else {
+            None
+        };
         let mut exps: Vec<(usize, f64)> = Vec::new();
         let mut clean = true;
         for c in 0..k {
             let b = sol[c];
-            match snap_exp(b) {
+            let tol = se.as_ref().map_or(EXP_SNAP_TOL, |se| {
+                (EXP_SNAP_Z * se[c]).min(EXP_SNAP_MAX).max(EXP_SNAP_TOL)
+            });
+            match crate::math::snap_exp_within(b, tol) {
                 Some(snapped) => {
                     if snapped != 0.0 {
                         exps.push((c, snapped));
@@ -160,8 +173,16 @@ pub(crate) fn mono_fit(inputs: &[&[f64]], target: &[f64], sample_n: usize) -> Ve
             }
         }
         let (r2, a, b) = r2_score(&target[..sn], &m);
-        if !(r2 >= MONO_FIT_MIN_R2) || !a.is_finite() || a == 0.0 || !b.is_finite() {
+        if !(r2 >= min_r2) || !a.is_finite() || a == 0.0 || !b.is_finite() {
             continue;
+        }
+        if r2 < MONO_FIT_MIN_R2 {
+            let e: Vec<f64> = (0..sn)
+                .map(|r| ly[r] - sol[k] - (0..k).map(|c| sol[c] * basis[c][r]).sum::<f64>())
+                .collect();
+            if crate::math::residuals_structured(&basis, &e) != Some(false) {
+                continue;
+            }
         }
         let mut expr = String::from("(");
         for (i, &(_c, e)) in exps.iter().enumerate() {

@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 2.1.0, result schema `keplearn.result.v3`.
+Version 2.1.1, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -150,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.0`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.1`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -833,6 +833,14 @@ options stop at the same point.
   affine part), ending in a monomial, a sparse sum of short terms, or a
   ratio of two such sums. A law outside that space is not found. Its best
   approximation is reported as a law not within precision, or as `no law found`.
+  A power law of the target as given is fitted on the logarithms and each
+  exponent taken as the grammar's nearest when within two standard errors
+  of the fit (at least 0.06, at most 0.5); it is a candidate from r² 0.9.
+  Below r² 0.995 it is kept only when its misses look like noise: the
+  misses of neighbouring rows are no more alike than chance (a
+  permutation test at 1%), since a missed shape makes neighbours miss
+  alike. Eight planets' surface gravities give exponents 1.07 ± 0.06 and
+  −2.21 ± 0.15 and pass the test (p 0.08), and `c*M/R**2` is found.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
   of the answer, but every column widens the search: thirty columns take
   about 7 s and 170 MB to 430 MB even for an easy law

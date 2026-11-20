@@ -1739,6 +1739,16 @@ fn real_surface_gravity_shows_the_simpler_law() {
         "{}",
         s
     );
+    let s = real_summary("surface_gravity_planets.tsv", "g_ms2");
+    let top = s.lines().next().unwrap_or("");
+    assert!(
+        top.starts_with("g_ms2 = ")
+            && top.contains("*mass_1e24kg/radius_km**2 ")
+            && top.contains("law (r2 = 0.98")
+            && s.contains("constants: 1 free"),
+        "{}",
+        s
+    );
 }
 
 #[test]
@@ -2045,4 +2055,25 @@ fn a_free_exponent_is_not_offered_as_a_fraction_on_a_relative_target() {
     assert!(!plain_decimal(61.0 / 6.0) && !plain_decimal(1.0 / 3.0));
     assert!(crate::guard::structural_constant(1.0 / 3.0));
     assert!(!crate::guard::structural_constant(61.0 / 6.0));
+}
+
+#[test]
+fn residuals_of_a_missed_shape_are_structured_and_noise_is_not() {
+    let mut s = 4242u64;
+    let x: Vec<f64> = (0..200).map(|_| lcg(&mut s)).collect();
+    let noise: Vec<f64> = (0..200).map(|_| lcg(&mut s) - 0.5).collect();
+    let curve: Vec<f64> = x
+        .iter()
+        .zip(&noise)
+        .map(|(v, n)| (6.0 * v).sin() + 0.1 * n)
+        .collect();
+    let basis = vec![x];
+    assert_eq!(
+        crate::math::residuals_structured(&basis, &curve),
+        Some(true)
+    );
+    assert_eq!(
+        crate::math::residuals_structured(&basis, &noise),
+        Some(false)
+    );
 }

@@ -1,5 +1,20 @@
 # Changelog
 
+## 2.1.1
+
+- **A noisy power law on the target as given is found.** Its exponents
+  are fitted on the logarithms and each taken as the grammar's nearest
+  when within two standard errors (at least 0.06, at most 0.5), and it is
+  a candidate from r² 0.9 (0.995 before). Below r² 0.995 its misses must
+  look like noise: neighbouring rows, by their inputs, may not miss alike
+  more than chance allows (a permutation test at 1%). Eight planets'
+  surface gravities (exponents 1.07 ± 0.06 and −2.21 ± 0.15) now give
+  `61000000*mass_1e24kg/radius_km**2`, a law at r² 0.984; 2.1.0 gave a
+  three-constant form. Reduced targets inside the search keep the
+  tolerance of 0.06 and r² 0.995.
+- Tests: the eight planets alone give the one-term law; a missed curve's
+  residuals are structured and plain noise's are not; 81 tests.
+
 ## 2.1.0
 
 - **Targets spanning decades.** A one-signed target whose largest value
