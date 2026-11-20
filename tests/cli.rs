@@ -115,7 +115,7 @@ fn a_target_name_that_is_not_utf8_finds_its_column() {
         .stderr(Stdio::piped())
         .spawn()
         .unwrap();
-    c.stdin.take().unwrap().write_all(b"x\ty\n1\t2\n").unwrap();
+    let _ = c.stdin.take().unwrap().write_all(b"x\ty\n1\t2\n");
     let o = c.wait_with_output().unwrap();
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("not valid UTF-8"));
