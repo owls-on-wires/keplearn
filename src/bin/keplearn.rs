@@ -1,6 +1,33 @@
-use keplearn::{run, Config};
+use keplearn::{run, write_stdout, Config};
 use std::env;
 use std::io::IsTerminal;
+
+extern "C" fn check_stdout() {
+    let fd = unsafe { std::os::fd::BorrowedFd::borrow_raw(1) };
+    if fd
+        .try_clone_to_owned()
+        .is_err_and(|e| e.raw_os_error() == Some(9))
+    {
+        keplearn::mark_stdout_closed();
+    }
+}
+
+#[cfg(target_os = "linux")]
+#[used]
+#[link_section = ".init_array"]
+static CHECK_STDOUT: extern "C" fn() = check_stdout;
+
+#[cfg(target_os = "macos")]
+#[used]
+#[link_section = "__DATA,__mod_init_func"]
+static CHECK_STDOUT: extern "C" fn() = check_stdout;
+
+fn print_or_exit(s: &str) {
+    if let Err(e) = write_stdout(s) {
+        eprintln!("keplearn: cannot write to stdout: {}", e);
+        std::process::exit(1);
+    }
+}
 
 const HELP: &str = "\
 keplearn - symbolic regression engine
@@ -95,8 +122,11 @@ OUTPUT (stdout, one JSON object, schema keplearn.result.v3):
 VERDICTS:
   law           fits reasonably well (far better than a constant; r2 of
                 at least 0.9 or a median miss within 5% of the target;
-                at most max(1, 5% of rows) missed by over 25%), with
-                rows to spare for its constants; written
+                at most max(1, 5% of rows) missed by over 25%), clean
+                when short of the cells' precision (one term of powers,
+                a group and an exponential at most, log alone, or two
+                terms of whole powers or logs), with rows to spare for its
+                constants; written
                 cleanly: a fitted constant within 0.1% of a simple value
                 (3/2, 1, 0.25) takes it, one within three standard
                 errors of a common constant (pi, 2*pi, e, sqrt(2)) or a
@@ -131,6 +161,10 @@ NOTES:
   * Round feature values (0.25, 0.5, integers) count as exact settings
     when the target is written far more precisely; otherwise as rounded
     readings, and a warning says when within_precision depends on that.
+  * A one-signed target spanning 100 to 1e6 times is taken as measured
+    to a fraction of its size: answers are fitted by their relative
+    misses, and power laws and exponentials with free exponents are
+    offered.
   * The summary shows simpler_law when there is one.
   * docs/reference.md (in the release archive) documents every rule.
 
@@ -164,11 +198,11 @@ fn main() {
         }
     }
     if args[1..].iter().any(|a| a == "-h" || a == "--help") {
-        print!("{}", HELP);
+        print_or_exit(HELP);
         return;
     }
     if args[1..].iter().any(|a| a == "-V" || a == "--version") {
-        println!("keplearn {}", env!("CARGO_PKG_VERSION"));
+        print_or_exit(&format!("keplearn {}\n", env!("CARGO_PKG_VERSION")));
         return;
     }
     fn take_val<'a>(args: &'a [String], i: usize, flag: &str) -> &'a str {

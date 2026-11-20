@@ -27,6 +27,9 @@ recursive reduction.
   closely the law fits: its `r2`, computed from the printed equation, its
   largest miss, and whether that is within the precision the cells are
   written to
+- Fits a target spanning decades (body weights, event counts, river
+  flows) by its relative misses, where a power law or exponential with a
+  free exponent is the usual law
 - Handles small tables (a law with one constant from 6 rows, one with none
   from 5)
 - Single binary, zero dependencies (fully static with the musl target)
@@ -87,10 +90,13 @@ force = m1*m2/r**2                                law (r2 = 1.0000, 60 rows)
 constants: none free
 fit: largest miss 0.000379% of the target's value (where the target is 1.06791), within the precision the cells are written to
 data: 60 rows, 3 columns; rounding floor 1.0e-6 of the target's variance
+next best: force = 1.3*m2/r**2    no law found
 ```
 
 The verdict is `law` or `no law found`. A law fits reasonably well (r² of
-at least 0.9, or a median miss within 5% of the target) and is written as
+at least 0.9, or a median miss within 5% of the target), has the shape
+laws take (a product of powers with at most one exponential or group, not
+`T*cos(T)` or `h + h*log(h)`), and is written as
 cleanly as its constants allow: a fitted constant within 0.1% of a simple
 value takes it, and one within the data's uncertainty of a common
 constant (`pi`, `2*pi`, `e`, `sqrt(2)`) or a physical constant in SI
@@ -108,7 +114,7 @@ T_yr = a_AU**(3/2)                                law (r2 = 0.99999953, 8 rows)
 constants: none free
 fit: largest miss 0.104% of the target's value (where the target is 0.241), more than the precision the cells are written to
 data: 8 rows, 1 column; rounding floor 3.6e-8 of the target's variance
-next best: T_yr = 1.57142857143*a_AU*log(a_AU)    no law found
+next best: T_yr = 1.6*a_AU*log(a_AU) + 0.9    no law found
 note: column 'planet' has no numeric values; it is dropped
 ```
 
@@ -123,7 +129,7 @@ P_kPa = R*T_K/V_L                                 law (r2 = 0.9992, 441 rows)
 constants: none free; snapped constants written by name
 fit: largest miss 3.39% of the target's value (where the target is 132.01), more than the precision the cells are written to
 data: 441 rows, 2 columns; rounding floor 3.1e-9 of the target's variance
-next best: P_kPa = 13.0794*T_K - 8.3266*T_K*arctan(V_L)    law
+next best: P_kPa = 0.000683*T_K**2 + 2651/V_L - 70    law
 ```
 
 Scattered data gives no law. Hubble's 1929 galaxies show the trend, not a

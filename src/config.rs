@@ -377,6 +377,24 @@ pub(crate) const STRUCT_RATIONAL_MAX: f64 = 12.0;
 /// the per-row precision check (guard::fits_each_row) applies to a target
 /// of one sign whose largest magnitude is at least this times its smallest
 pub(crate) const REL_SPAN: f64 = 1e3;
+/// A one-signed target whose largest value is at least this times its
+/// smallest is taken as measured to a fraction of its size
+/// (`relative::proportional`): answers are also fitted with rows weighted
+/// by their size, and log-linear laws are offered.
+pub(crate) const REL_FIT_SPAN: f64 = 100.0;
+/// ... and at most this times (the weighted solves square the range: past
+/// it they keep too few of a double's digits, and the plain fit is used).
+pub(crate) const REL_FIT_SPAN_MAX: f64 = 1e6;
+/// Reweightings of the relative fit (`guard`): each weights the rows by
+/// the inverse of the previous fit's prediction.
+pub(crate) const RELATIVE_FIT_ROUNDS: usize = 3;
+/// On a target measured to a fraction of its size, an inner constant within
+/// this many standard errors of one of the grammar's exponents takes it.
+pub(crate) const RATIONAL_Z: f64 = 2.0;
+/// The most terms of a log-linear law (`relative::loglin_finalists`).
+pub(crate) const LOGLIN_MAX_TERMS: usize = 3;
+/// The single-term log-linear laws offered, the best first.
+pub(crate) const LOGLIN_SINGLES: usize = 4;
 /// the relative error each row is allowed beyond its rounding variance
 /// (full-precision cells: a true form fits to near machine precision)
 pub(crate) const REL_EXACT_EPS: f64 = 1e-8;

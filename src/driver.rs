@@ -526,7 +526,30 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     })
 }
 
+static STDOUT_CLOSED: std::sync::atomic::AtomicBool = std::sync::atomic::AtomicBool::new(false);
+
+pub fn mark_stdout_closed() {
+    STDOUT_CLOSED.store(true, std::sync::atomic::Ordering::Relaxed);
+}
+
+pub fn write_stdout(s: &str) -> std::io::Result<()> {
+    if STDOUT_CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
+        return Err(std::io::Error::other("stdout is closed"));
+    }
+    let mut o = std::io::stdout().lock();
+    o.write_all(s.as_bytes())?;
+    o.flush()
+}
+
+fn refuse_closed_stdout(out_path: &str) {
+    if out_path.is_empty() && STDOUT_CLOSED.load(std::sync::atomic::Ordering::Relaxed) {
+        eprintln!("keplearn: cannot write the result: stdout is closed");
+        std::process::exit(1);
+    }
+}
+
 pub fn run(cfg: Config) {
+    refuse_closed_stdout(&cfg.out_path);
     if !cfg.trace_path.is_empty() {
         let f = match fs::OpenOptions::new()
             .create(true)
@@ -592,7 +615,10 @@ pub fn run(cfg: Config) {
         rendered
     };
     if out_path.is_empty() {
-        print!("{}", rendered);
+        if let Err(e) = write_stdout(&rendered) {
+            eprintln!("keplearn: cannot write the result to stdout: {}", e);
+            std::process::exit(1);
+        }
     } else if let Err(e) = fs::write(&out_path, &rendered) {
         eprintln!("keplearn: cannot write output file '{}': {}", out_path, e);
         std::process::exit(1);
@@ -804,6 +830,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
     }
     crate::guard::set_quanta(&q_features, &q_target);
+    crate::guard::set_relative(false);
     {
         let t = &target[..train_n];
         let m = t.iter().sum::<f64>() / train_n.max(1) as f64;
@@ -1239,6 +1266,26 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         }
         if !already {
             finalists.push(c.clone());
+        }
+    }
+    if crate::relative::proportional(&target[..train_n]) {
+        crate::guard::set_relative(true);
+        for (model, r2) in crate::relative::loglin_finalists(&features, n_cols, &target, sample_n) {
+            let Ok(parsed) = Parser::parse(&model) else {
+                continue;
+            };
+            finalists.push(Cand {
+                model,
+                desc: "loglin".to_string(),
+                expr: "loglin".to_string(),
+                columns: Vec::new(),
+                scale: 1.0,
+                offset: 0.0,
+                fit_r2: r2,
+                gate_r2: r2,
+                nodes: parsed.node_count(),
+                root_raw: false,
+            });
         }
     }
     let zero_qf: Vec<Vec<f64>> = q_features.iter().map(|c| vec![0.0; c.len()]).collect();
@@ -1709,6 +1756,13 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 }
                 _ => v,
             };
+            let v = match crate::guard::not_clean(&c.model) {
+                Some(fault) if v == "approximate" => {
+                    why = Some(format!("the best fit is not a clean law: {}", fault));
+                    "no law found"
+                }
+                _ => v,
+            };
             let missed =
                 crate::guard::badly_missed(&c.model, &features, &target, &q_target, n_rows);
             let v = match missed {
@@ -1833,7 +1887,8 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             let sym = if is_law {
                 crate::output::symbolic_model(&c.model, &names)
             } else {
-                c.model.clone()
+                crate::guard::unnamed_answer(&c.model, &features, &target, n_cols, train_n)
+                    .unwrap_or_else(|| c.model.clone())
             };
             results.push(crate::output::ResultObj {
                 expr: out_expr.to_string(),

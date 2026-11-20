@@ -28,10 +28,66 @@ pub(crate) fn canonical_answer(
     } else {
         (ce, cf)
     };
-    Some((
-        crate::forms::nf::print_structural(&e),
-        crate::forms::nf::print_answer(&e, &f),
-    ))
+    let f = if !exact && RELATIVE.with(|r| r.get()) {
+        supported_digits(&e, f, features, target, n_cols, train_n)
+    } else {
+        f
+    };
+    let answer = crate::forms::nf::print_answer(&e, &f);
+    match power_form(&answer) {
+        Some((pe, pa)) => Some((crate::forms::nf::print_structural(&pe), pa)),
+        None => Some((crate::forms::nf::print_structural(&e), answer)),
+    }
+}
+
+pub(crate) fn power_form(model: &str) -> Option<(crate::forms::nf::Expr, String)> {
+    use crate::forms::ast::Ast;
+    use crate::forms::nf::{Un, Q};
+    fn rewrite(a: &Ast, hit: &mut bool) -> Ast {
+        let b = |x: &Ast, hit: &mut bool| Box::new(rewrite(x, hit));
+        match a {
+            Ast::Un(Un::Exp, inner) => {
+                let (sign, body) = match inner.as_ref() {
+                    Ast::Neg(x) => (-1.0, x.as_ref()),
+                    x => (1.0, x),
+                };
+                if let Ast::Mul(k, l) = body {
+                    let v = match k.as_ref() {
+                        Ast::Num(v) => Some(*v),
+                        Ast::Neg(n) => match n.as_ref() {
+                            Ast::Num(v) => Some(-v),
+                            _ => None,
+                        },
+                        _ => None,
+                    };
+                    if let (Some(v), Ast::Un(Un::Log, x)) = (v, l.as_ref()) {
+                        if matches!(x.as_ref(), Ast::Var(_)) && Q::from_f64(sign * v).is_some() {
+                            *hit = true;
+                            return Ast::Pow(b(x, hit), Box::new(Ast::Num(sign * v)));
+                        }
+                    }
+                }
+                Ast::Un(Un::Exp, b(inner, hit))
+            }
+            Ast::Num(_) | Ast::Var(_) => a.clone(),
+            Ast::Add(x, y) => Ast::Add(b(x, hit), b(y, hit)),
+            Ast::Sub(x, y) => Ast::Sub(b(x, hit), b(y, hit)),
+            Ast::Mul(x, y) => Ast::Mul(b(x, hit), b(y, hit)),
+            Ast::Div(x, y) => Ast::Div(b(x, hit), b(y, hit)),
+            Ast::Pow(x, y) => Ast::Pow(b(x, hit), b(y, hit)),
+            Ast::Neg(x) => Ast::Neg(b(x, hit)),
+            Ast::Un(u, x) => Ast::Un(*u, b(x, hit)),
+            Ast::Sqrt(x) => Ast::Sqrt(b(x, hit)),
+        }
+    }
+    let ast = crate::forms::ast::parse(model).ok()?;
+    let mut hit = false;
+    let p = rewrite(&ast, &mut hit);
+    if !hit {
+        return None;
+    }
+    let (e, f) = crate::forms::canon::normalize(&p).ok()?;
+    Some((e.clone(), crate::forms::nf::print_answer(&e, &f)))
 }
 
 pub(crate) fn simple_near(v: f64) -> Option<f64> {
@@ -86,6 +142,7 @@ fn clean_answer(
             .collect();
         v.iter().sum::<f64>() / v.len().max(1) as f64
     };
+    let w2 = row_weights2(y);
     let unexplained = |e: &crate::forms::nf::Expr, f: &Fitted| -> f64 {
         let t = eval_terms(e, &cols, &f.inner);
         let p: Vec<f64> = (0..y.len())
@@ -98,8 +155,8 @@ fn clean_answer(
             return f64::INFINITY;
         }
         let m = rows.iter().map(|&r| y[r]).sum::<f64>() / rows.len() as f64;
-        let sst: f64 = rows.iter().map(|&r| (y[r] - m).powi(2)).sum();
-        let ssr: f64 = rows.iter().map(|&r| (y[r] - p[r]).powi(2)).sum();
+        let sst: f64 = rows.iter().map(|&r| w2[r] * (y[r] - m).powi(2)).sum();
+        let ssr: f64 = rows.iter().map(|&r| w2[r] * (y[r] - p[r]).powi(2)).sum();
         if sst > 0.0 && rows.len() * 10 >= y.len() * 9 {
             ssr / sst
         } else {
@@ -246,7 +303,39 @@ fn clean_answer(
         any
     };
     changed |= unpin(&mut c, true);
-    changed |= name_slots(&mut c, true);
+    let relative = RELATIVE.with(|r| r.get());
+    if relative {
+        for k in 0..c.inner.len() {
+            let v = c.inner[k];
+            if v == 0.0 || structural_constant(v) {
+                continue;
+            }
+            let Some((u_min, rise)) = pin(&c, true, k) else {
+                continue;
+            };
+            let per = rise / (v * crate::config::NAME_MAX_REL_SE).powi(2);
+            let rows = (0..y.len()).filter(|&r| y[r].is_finite()).count();
+            let dof = rows.saturating_sub(c.coef.len() + c.inner.len() + 1).max(1) as f64;
+            let nearest = crate::forms::nf::Q::ALL
+                .iter()
+                .map(|q| q.val())
+                .min_by(|a, b| (a - v).abs().total_cmp(&(b - v).abs()));
+            if let Some(q) = nearest {
+                if per * (q - v).powi(2)
+                    <= crate::config::RATIONAL_Z * crate::config::RATIONAL_Z * u_min / dof
+                {
+                    let mut t = c.clone();
+                    t.inner[k] = q;
+                    if refit_linear(&e, &cols, y, &mut t) {
+                        c = t;
+                        changed = true;
+                    }
+                }
+            }
+        }
+    } else {
+        changed |= name_slots(&mut c, true);
+    }
     for v in c.inner.iter_mut() {
         if let Some(s) = simple_near(*v).filter(|s| s != v) {
             *v = s;
@@ -288,6 +377,155 @@ fn clean_answer(
     }
 }
 
+pub(crate) fn not_clean(model: &str) -> Option<String> {
+    use crate::forms::nf::{Arg, Base, Factor, Term, Un, Q};
+    let (e, _) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let monomial = |t: &Term| t.factors.iter().all(|f| matches!(f.base, Base::Var(_)));
+    let monomial_arg = |a: &Arg| a.terms.len() == 1 && monomial(&a.terms[0]);
+    let whole_arg = |a: &Arg| monomial_arg(a) && a.terms[0].factors.iter().all(|f| f.q.den == 1);
+    let columns = |a: &Arg| {
+        let mut v: Vec<u8> = a
+            .terms
+            .iter()
+            .flat_map(|t| t.factors.iter())
+            .filter_map(|f| match f.base {
+                Base::Var(c) => Some(c),
+                _ => None,
+            })
+            .collect();
+        v.sort_unstable();
+        v.dedup();
+        v.len()
+    };
+    let lone_log = |t: &Term| {
+        matches!(
+            t.factors.as_slice(), [Factor { base : Base::Un(Un::Log, a), q : Q::P1 }] if
+            monomial_arg(a)
+        )
+    };
+    if e.terms.len() > 1 {
+        let whole =
+            |t: &Term| (monomial(t) && t.factors.iter().all(|f| f.q.den == 1)) || lone_log(t);
+        return (e.terms.len() > 2 || !e.terms.iter().all(whole))
+            .then(|| "it adds terms of different kinds".to_string());
+    }
+    let Some(t) = e.terms.first() else {
+        return None;
+    };
+    let (mut groups, mut exps) = (0, 0);
+    let sole = t.factors.len() == 1;
+    for Factor { base, q } in &t.factors {
+        match base {
+            Base::Var(_) => {}
+            Base::Group(a) => {
+                groups += 1;
+                if !a.terms.iter().all(monomial) {
+                    return Some("a function sits inside a group".to_string());
+                }
+            }
+            Base::Un(Un::Exp, a) => {
+                exps += 1;
+                let power = a.scale
+                    && a.terms.len() == 1
+                    && matches!(
+                        a.terms[0].factors.as_slice(), [Factor { base : Base::Un(Un::Log,
+                        b), q : Q::P1 }] if monomial_arg(b) || (b.terms.iter()
+                        .all(monomial) && b.shift)
+                    );
+                if *q != Q::P1 || !(power || (whole_arg(a) && (a.scale || columns(a) >= 2))) {
+                    return Some("its exponential is not of a scaled argument".to_string());
+                }
+            }
+            Base::Un(Un::Log, a) => {
+                if !(sole && *q == Q::P1 && monomial_arg(a)) {
+                    return Some(
+                        "a logarithm of a quantity with units enters it other than alone"
+                            .to_string(),
+                    );
+                }
+            }
+            Base::Un(u, a) => {
+                let linear = |a: &Arg| a.terms[0].factors.iter().all(|f| f.q == Q::P1);
+                if !(whole_arg(a) && (a.scale || columns(a) >= 2) && (!a.shift || linear(a))) {
+                    return Some(format!("{} is taken of a quantity with units", u.name()));
+                }
+            }
+        }
+    }
+    if groups > 1 || exps > 1 {
+        return Some("it multiplies several groups or exponentials".to_string());
+    }
+    None
+}
+
+pub(crate) fn unnamed_answer(
+    model: &str,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n_cols: usize,
+    train_n: usize,
+) -> Option<String> {
+    use crate::forms::nf::{eval_terms, Fitted};
+    let (e, f) = crate::forms::canon::normalize(&crate::forms::ast::parse(model).ok()?).ok()?;
+    let named = |v: f64| {
+        v != 0.0
+            && (crate::forms::nf::symbolic_constant(v).is_some()
+                || crate::forms::nf::physical_constant(v).is_some())
+    };
+    if !f.coef.iter().chain(&f.inner).any(|v| named(*v)) {
+        return None;
+    }
+    let cols: Vec<Vec<f64>> = features[..n_cols]
+        .iter()
+        .map(|c| c[..train_n].to_vec())
+        .collect();
+    let y = &target[..train_n];
+    let ssr = |c: &Fitted| -> f64 {
+        let t = eval_terms(&e, &cols, &c.inner);
+        (0..y.len())
+            .filter(|&r| y[r].is_finite())
+            .map(|r| {
+                let p = c.offset + c.coef.iter().zip(&t).map(|(k, g)| k * g[r]).sum::<f64>();
+                (y[r] - p).powi(2)
+            })
+            .sum()
+    };
+    let rows = y.iter().filter(|v| v.is_finite()).count();
+    let free = f.coef.len() + f.inner.len() + usize::from(f.offset != 0.0);
+    let dof = rows.saturating_sub(free).max(1) as f64;
+    let mut c = f.clone();
+    for inner in [true, false] {
+        for k in 0..if inner { c.inner.len() } else { c.coef.len() } {
+            let v = if inner { c.inner[k] } else { c.coef[k] };
+            if !named(v) {
+                continue;
+            }
+            let u0 = ssr(&c);
+            let set = |c: &Fitted, x: f64| -> Option<Fitted> {
+                let mut t = c.clone();
+                if inner {
+                    t.inner[k] = x;
+                    refit_linear(&e, &cols, y, &mut t).then_some(t)
+                } else {
+                    t.coef[k] = x;
+                    Some(t)
+                }
+            };
+            for d in 1..=6 {
+                let m = 10f64.powi(d - 1 - v.abs().log10().floor() as i32);
+                let r = (v * m).round() / m;
+                if let Some(t) = set(&c, r) {
+                    if d == 6 || ssr(&t) - u0 <= u0 / dof {
+                        c = t;
+                        break;
+                    }
+                }
+            }
+        }
+    }
+    Some(crate::forms::nf::print_answer(&e, &c))
+}
+
 fn common_constants() -> Vec<f64> {
     use std::f64::consts::{E, LN_2, PI, SQRT_2};
     let mut out = Vec::new();
@@ -311,6 +549,97 @@ fn common_constants() -> Vec<f64> {
 
 const COMMON_PREFILTER: f64 = 0.02;
 
+fn row_weights2(y: &[f64]) -> Vec<f64> {
+    if RELATIVE.with(|r| r.get()) {
+        y.iter()
+            .map(|v| {
+                if v.is_finite() && *v != 0.0 {
+                    1.0 / (v * v)
+                } else {
+                    0.0
+                }
+            })
+            .collect()
+    } else {
+        vec![1.0; y.len()]
+    }
+}
+
+fn supported_digits(
+    e: &crate::forms::nf::Expr,
+    f: crate::forms::nf::Fitted,
+    features: &[Vec<f64>],
+    target: &[f64],
+    n_cols: usize,
+    train_n: usize,
+) -> crate::forms::nf::Fitted {
+    use crate::forms::nf::{eval_terms, Fitted};
+    let cols: Vec<Vec<f64>> = features[..n_cols]
+        .iter()
+        .map(|c| c[..train_n].to_vec())
+        .collect();
+    let y = &target[..train_n];
+    let w2 = row_weights2(y);
+    let ssr = |c: &Fitted| -> f64 {
+        let t = eval_terms(e, &cols, &c.inner);
+        (0..y.len())
+            .filter(|&r| y[r].is_finite())
+            .map(|r| {
+                let p = c.offset + c.coef.iter().zip(&t).map(|(k, g)| k * g[r]).sum::<f64>();
+                w2[r] * (y[r] - p).powi(2)
+            })
+            .sum()
+    };
+    let rows = y.iter().filter(|v| v.is_finite()).count();
+    let free =
+        f.coef.iter().filter(|v| **v != 0.0).count() + f.inner.len() + usize::from(f.offset != 0.0);
+    let dof = rows.saturating_sub(free).max(1) as f64;
+    let round = |v: f64, d: i32| {
+        let m = 10f64.powi(d - 1 - v.abs().log10().floor() as i32);
+        (v * m).round() / m
+    };
+    let mut c = f;
+    for k in 0..c.inner.len() {
+        let v = c.inner[k];
+        if v == 0.0 || structural_constant(v) {
+            continue;
+        }
+        let u0 = ssr(&c);
+        for d in 1..=6 {
+            let mut t = c.clone();
+            t.inner[k] = round(v, d);
+            if refit_linear(e, &cols, y, &mut t) && (d == 6 || ssr(&t) - u0 <= u0 / dof) {
+                c = t;
+                break;
+            }
+        }
+    }
+    for k in 0..=c.coef.len() {
+        let v = if k < c.coef.len() {
+            c.coef[k]
+        } else {
+            c.offset
+        };
+        if v == 0.0 || structural_constant(v) {
+            continue;
+        }
+        let u0 = ssr(&c);
+        for d in 1..=6 {
+            let mut t = c.clone();
+            if k < t.coef.len() {
+                t.coef[k] = round(v, d);
+            } else {
+                t.offset = round(v, d);
+            }
+            if d == 6 || ssr(&t) - u0 <= u0 / dof {
+                c = t;
+                break;
+            }
+        }
+    }
+    c
+}
+
 fn refit_linear(
     e: &crate::forms::nf::Expr,
     cols: &[Vec<f64>],
@@ -329,12 +658,13 @@ fn refit_linear(
         return false;
     }
     let col = |i: usize, r: usize| if i < t.len() { t[i][r] } else { 1.0 };
+    let w2 = row_weights2(y);
     let mut a = vec![vec![0.0f64; k + 1]; k];
     for i in 0..k {
         for j in 0..k {
-            a[i][j] = rows.iter().map(|&r| col(i, r) * col(j, r)).sum();
+            a[i][j] = rows.iter().map(|&r| w2[r] * col(i, r) * col(j, r)).sum();
         }
-        a[i][k] = rows.iter().map(|&r| col(i, r) * y[r]).sum();
+        a[i][k] = rows.iter().map(|&r| w2[r] * col(i, r) * y[r]).sum();
     }
     for p in 0..k {
         let Some(piv) = (p..k).max_by(|&x, &z| a[x][p].abs().total_cmp(&a[z][p].abs())) else {
@@ -565,26 +895,76 @@ fn canonical_core(
     };
     let fit = |e: &crate::forms::nf::Expr| -> Option<crate::forms::fit::FitResult> {
         let mut fr = crate::forms::fit::fit_expr(e, &xf, &yf, &xh, &yh, &cfg)?;
+        let as_result = |fw: crate::forms::nf::Fitted| {
+            let th = crate::forms::nf::eval_terms(e, &xh, &fw.inner);
+            let yhat: Vec<f64> = (0..yh.len())
+                .map(|r| fw.offset + fw.coef.iter().zip(&th).map(|(c, g)| c * g[r]).sum::<f64>())
+                .collect();
+            crate::forms::fit::FitResult {
+                r2_holdout: crate::forms::fit::r2(&yh, &yhat),
+                fitted: fw,
+            }
+        };
         if let Some(w) = weights_for(e, &fr) {
-            let w = &w;
-            if let Some(fw) = crate::forms::fit::weighted_fit(e, &xf, &yf, w, &fr.fitted.inner) {
-                let th = crate::forms::nf::eval_terms(e, &xh, &fw.inner);
-                let yhat: Vec<f64> = (0..yh.len())
-                    .map(|r| {
-                        fw.offset + fw.coef.iter().zip(&th).map(|(c, g)| c * g[r]).sum::<f64>()
+            if let Some(fw) = crate::forms::fit::weighted_fit(e, &xf, &yf, &w, &fr.fitted.inner) {
+                let alt = as_result(fw);
+                if dl(e, &alt) < dl(e, &fr) {
+                    fr = alt;
+                }
+            }
+        }
+        let span_ok = {
+            let (lo, hi) = yf
+                .iter()
+                .filter(|v| v.is_finite() && **v != 0.0)
+                .fold((f64::INFINITY, 0.0f64), |(l, h), v| {
+                    (l.min(v.abs()), h.max(v.abs()))
+                });
+            lo > 0.0 && hi <= WEIGHT_RANGE_MAX * lo
+        };
+        if RELATIVE.with(|r| r.get()) && span_ok {
+            let predict = |f: &crate::forms::nf::Fitted| -> Vec<f64> {
+                let t = crate::forms::nf::eval_terms(e, &xf, &f.inner);
+                (0..yf.len())
+                    .map(|r| f.offset + f.coef.iter().zip(&t).map(|(c, g)| c * g[r]).sum::<f64>())
+                    .collect()
+            };
+            let mut cur = fr.fitted.clone();
+            let mut ok = true;
+            for _ in 0..crate::config::RELATIVE_FIT_ROUNDS {
+                let w: Vec<f64> = predict(&cur)
+                    .iter()
+                    .zip(&yf)
+                    .map(|(p, y)| {
+                        let s = if p.is_finite() && *p != 0.0 {
+                            p.abs()
+                        } else {
+                            y.abs()
+                        };
+                        if s > 0.0 && s.is_finite() {
+                            1.0 / s
+                        } else {
+                            0.0
+                        }
                     })
                     .collect();
-                let alt = crate::forms::fit::FitResult {
-                    r2_holdout: crate::forms::fit::r2(&yh, &yhat),
-                    fitted: fw,
-                };
+                match crate::forms::fit::weighted_fit(e, &xf, &yf, &w, &cur.inner) {
+                    Some(fw) => cur = fw,
+                    None => {
+                        ok = false;
+                        break;
+                    }
+                }
+            }
+            if ok {
+                let alt = as_result(cur);
                 if dl(e, &alt) < dl(e, &fr) {
                     fr = alt;
                 }
             }
         }
         let exact = fr.is_exact(&cfg);
-        let tol = if exact {
+        let tol = if exact || RELATIVE.with(|r| r.get()) {
             snap_tol
         } else {
             snap_tol.max(stat_tol(fr.r2_holdout))
@@ -594,7 +974,18 @@ fn canonical_core(
             |opts: &[crate::forms::nf::Fitted]| snap_choice(e, opts, features, target, train_n);
         let chooser: Option<crate::forms::search::SnapChoice> =
             (tol > crate::forms::search::SNAP_TOL).then_some(&choose);
-        crate::forms::search::snap_by(e, &mut fr, &xf, &yf, &xh, &yh, tol, true, chooser);
+        let relative = RELATIVE.with(|r| r.get());
+        crate::forms::search::snap_by(
+            e,
+            &mut fr,
+            &xf,
+            &yf,
+            &xh,
+            &yh,
+            tol,
+            exact || !relative,
+            chooser,
+        );
         if let Some(mut alt) = pre {
             if !inner_unchanged(&alt, &fr) && !rows_ok(e, &fr) {
                 crate::forms::search::snap_by(e, &mut alt, &xf, &yf, &xh, &yh, tol, false, chooser);
@@ -849,6 +1240,19 @@ thread_local! {
 
 pub(crate) fn set_quanta(q_features: &[Vec<f64>], q_target: &[f64]) {
     QUANTA.with(|q| *q.borrow_mut() = (q_features.to_vec(), q_target.to_vec()));
+    clear_dl_cache();
+}
+
+thread_local! {
+    static RELATIVE : std::cell::Cell < bool > = const { std::cell::Cell::new(false) };
+}
+
+pub(crate) fn relative() -> bool {
+    RELATIVE.with(|r| r.get())
+}
+
+pub(crate) fn set_relative(on: bool) {
+    RELATIVE.with(|r| r.set(on));
     clear_dl_cache();
 }
 
@@ -1314,7 +1718,11 @@ pub(crate) fn description_length(
             / nd;
         if sd > 0.0 {
             let mean_allowed = defined.iter().map(|&k| allowed(k)).sum::<f64>() / nd;
+            let proportional = RELATIVE.with(|r| r.get());
             for (s2m, rel) in [(additive, false), (relative, true)] {
+                if proportional && !rel {
+                    continue;
+                }
                 let scale = if rel {
                     defined
                         .iter()

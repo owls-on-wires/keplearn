@@ -1544,7 +1544,7 @@ fn an_offset_and_a_scale_are_snapped_together() {
         .unwrap();
     assert_eq!(
         top.get("model").and_then(|v| v.as_str()),
-        Some("1239.84*1/x1")
+        Some("1239.84/x1")
     );
     assert_eq!(precision_verdict(&top), "exact");
 }
@@ -1806,9 +1806,9 @@ fn a_narrow_target_with_small_misses_is_a_law() {
 #[test]
 fn real_boyle_gives_pressure_inverse_to_volume() {
     let (v, m) = real_top(&real("boyle_1662.tsv", "pressure"));
-    let k: f64 = m.split('*').next().unwrap_or("").parse().unwrap_or(0.0);
+    let k: f64 = m.split('/').next().unwrap_or("").parse().unwrap_or(0.0);
     assert!(
-        v == "law" && m.ends_with("*1/volume") && (1390.0..1420.0).contains(&k),
+        v == "law" && m.ends_with("/volume") && (1390.0..1420.0).contains(&k),
         "{} {}",
         v,
         m
@@ -1949,4 +1949,100 @@ fn a_constant_fitted_short_of_its_best_value_is_still_named() {
         "{:?}",
         j.get("simpler_law")
     );
+}
+
+#[test]
+fn an_answer_that_is_no_law_writes_no_named_value() {
+    let mut s = 3u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (s >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let n = 40;
+    let x: Vec<f64> = (0..n).map(|i| 1.0 + i as f64 / 4.0).collect();
+    let y: Vec<f64> = x
+        .iter()
+        .map(|v| 0.8 * v * (1.0 + 0.4 * (next() - 0.5)))
+        .collect();
+    let out = crate::guard::unnamed_answer("0.7853981633974483*x1", &[x], &y, 1, n).unwrap();
+    let k: f64 = out.trim_end_matches("*x1").parse().unwrap();
+    assert!(
+        out.len() <= "0.785*x1".len() && (k - 0.785).abs() < 0.1,
+        "{}",
+        out
+    );
+}
+
+#[test]
+fn a_function_of_a_shifted_power_is_not_clean() {
+    assert!(crate::guard::not_clean("3.39*x1*x2**2*arccos(-3/x2**6 + 1)").is_some());
+    assert!(crate::guard::not_clean("2.1*sin(0.5*x1 + 0.3)").is_none());
+    assert!(crate::guard::not_clean("0.2866*log(sqrt(x1) + 0.66*x1**2) + 0.14").is_some());
+    assert!(crate::guard::not_clean("0.2887/x1 + 0.5772*log(x1)").is_none());
+    assert!(crate::guard::not_clean("-26530*x1 + 15170*x1*log(x1) + 32373").is_some());
+}
+
+#[test]
+fn a_law_short_of_precision_is_clean() {
+    for m in [
+        "6.4621e-9*x1**(3/2)",
+        "364*x1**(3/2)/sqrt(x2)",
+        "8.91*exp(-2.284*x1) + 0.29",
+        "364.59875*x1**2/(x1**2 - 4)",
+        "-1.41*log(x1) + 16.5",
+        "0.0076*exp(3.1*log(x1))",
+        "4250*exp(1.6*log(x1 - 2.3))",
+        "212.7*x1/(x1 + 0.0641)",
+        "1.2*x1 + 0.3*x1**2 + 4",
+        "2*exp(-x1*x2/x3)",
+    ] {
+        assert_eq!(crate::guard::not_clean(m), None, "{}", m);
+    }
+    for m in [
+        "0.0631*x1 - 153.9*x1/(sqrt(x1) + 4.85)**2 + 99.5",
+        "-4243016*1/((exp(3.14159*sqrt(x1)) + 6500)) + 668.9",
+        "12.03*log(x1)**2",
+        "-6.77*x1*cos(x1) + 4.42",
+        "-26530*x1 + 15170*x1*log(x1) + 32373",
+        "521300*exp(-0.2421*sqrt(x1))*exp(0.0824*x1) - 436000",
+        "-814*exp(-0.04*sqrt(x1)) + 800",
+    ] {
+        assert!(crate::guard::not_clean(m).is_some(), "{}", m);
+    }
+}
+
+#[test]
+fn real_perch_weights_give_a_power_law() {
+    let j = real("perch_length_weight.tsv", "weight_g");
+    let (v, m) = real_top(&j);
+    let exponent: Option<f64> = m
+        .strip_suffix("*log(length_total_cm))")
+        .and_then(|r| r.rsplit("exp(").next())
+        .and_then(|e| e.parse().ok());
+    assert!(
+        v == "law" && exponent.is_some_and(|e| (3.0..3.3).contains(&e)),
+        "{} {}",
+        v,
+        m
+    );
+}
+
+#[test]
+fn a_power_law_fitted_in_log_form_is_written_as_a_power() {
+    let w = |m: &str| crate::guard::power_form(m).map(|x| x.1);
+    assert_eq!(w("1.3*x2*exp(-2*log(x3))").as_deref(), Some("1.3*x2/x3**2"));
+    assert_eq!(w("0.5*exp(3*log(x1))").as_deref(), Some("0.5*x1**3"));
+    assert_eq!(w("0.0075*exp(3.1*log(x1))"), None);
+    assert_eq!(w("x2*exp(1.5*log(x1 - 2))"), None);
+}
+
+#[test]
+fn a_free_exponent_is_not_offered_as_a_fraction_on_a_relative_target() {
+    use crate::forms::search::plain_decimal;
+    assert!(plain_decimal(10.17) && plain_decimal(3.1) && plain_decimal(-0.0075));
+    assert!(!plain_decimal(61.0 / 6.0) && !plain_decimal(1.0 / 3.0));
+    assert!(crate::guard::structural_constant(1.0 / 3.0));
+    assert!(!crate::guard::structural_constant(61.0 / 6.0));
 }

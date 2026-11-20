@@ -288,6 +288,23 @@ pub(crate) struct ResultObj {
     pub(crate) largest_miss: Option<(f64, f64)>,
 }
 
+fn shown(s: &str) -> String {
+    let b = s.as_bytes();
+    let mut out = String::with_capacity(s.len());
+    let mut i = 0;
+    while i < b.len() {
+        if b[i..].starts_with(b"*1/") && (i == 0 || b[i - 1] != b'*') {
+            out.push('/');
+            i += 3;
+        } else {
+            let ch = s[i..].chars().next().unwrap();
+            out.push(ch);
+            i += ch.len_utf8();
+        }
+    }
+    out
+}
+
 fn jstr(s: &str) -> String {
     format!("\"{}\"", json_esc(s))
 }
@@ -335,11 +352,12 @@ impl ResultObj {
     pub(crate) fn json(&self) -> String {
         format!(
             "{{\"expr\":{},\"model\":{},\"r2\":{},\"search_r2\":{},\"holdout_r2\":{},\"scale\":{},\"offset\":{},\"columns\":{:?},\"uses\":[{}],\"factor\":\"direct\",\"structure\":{},\"canonical\":{},\"verdict\":\"{}\",\"symbolic\":{},\"named\":{},\"free_constants\":{},\"within_precision\":{},\"largest_miss\":{},\"largest_miss_at\":{}}}",
-            jstr(& self.expr), jstr(& self.model), j10(self.r2), j10(self.search_r2),
-            jopt_f(self.holdout_r2), self.scale, self.offset, self.columns, self.uses
-            .iter().map(| u | jstr(u)).collect::< Vec < _ >> ().join(","), jopt_s(& self
-            .structure), jopt_s(& self.canonical), self.verdict, jstr(& self.symbolic),
-            jstr(& self.named), jopt_u(self.free_constants), self.within_precision
+            jstr(& self.expr), jstr(& shown(& self.model)), j10(self.r2), j10(self
+            .search_r2), jopt_f(self.holdout_r2), self.scale, self.offset, self.columns,
+            self.uses.iter().map(| u | jstr(u)).collect::< Vec < _ >> ().join(","),
+            jopt_s(& self.structure.as_deref().map(shown)), jopt_s(& self.canonical
+            .as_deref().map(shown)), self.verdict, jstr(& shown(& self.symbolic)), jstr(&
+            shown(& self.named)), jopt_u(self.free_constants), self.within_precision
             .map_or("null".to_string(), | b | b.to_string()), jopt_f(self.largest_miss
             .map(| m | m.0)), jopt_f(self.largest_miss.map(| m | m.1))
         )

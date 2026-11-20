@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 2.0.1, result schema `keplearn.result.v3`.
+Version 2.1.0, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -150,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.0.1`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.0`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -279,7 +279,29 @@ An answer is a law when all of these hold:
    an r² near 1 can come from the large values alone (a steam table's
    `0.002229*exp((4*sqrt(3)/3)*T**(1/3)) + 1`, r² 0.99999, misses its two
    smallest pressures by 28% and 64%). One wild row, a typo, is allowed.
-3. **It has rows to spare.** The table has at least (constants + 3)
+3. **It is clean**, when it is not within precision: it has the shape
+   laws take. Fitted to noise or to a second effect, the search's other
+   shapes give forms nobody would accept (`-6.77*T*cos(T) + 4.42` on six
+   filament temperatures, `-26530*h + 15170*h*log(h) + 32373` on a river
+   gauge). A clean law is
+   - one term: a product of powers of the columns, with at most one group
+     of such products and a constant raised to a power (`x/(x + C)`,
+     `n**2/(n**2 - 4)`) and at most one exponential, of a scaled argument
+     (`exp(C*x)`, `exp(C/x)`, `exp(C*x**2)`) or a power with a free
+     exponent (`exp(C*log(x))`, `exp(C*log(x - e))`); the columns inside
+     a function take whole powers;
+   - or `C*log(x) + b`, a logarithm alone and to the first power, of one
+     product of columns (`log(x/y)`, `log(x - e)`; not
+     `log(sqrt(x) + C*x**2)`);
+   - or two terms, each a product of whole powers or such a logarithm
+     (`a + b*t + c*t**2`, `a*log(n) + b/n`);
+   - any other function only of a scaled argument (`sin(C*t)`), or of a
+     product or ratio of two or more columns (a quantity without units),
+     with a constant added only to a column to the first power (a phase,
+     `sin(C*t + p)`; not `arccos(1 - C/V**6)`).
+
+   A law within precision can take any shape.
+4. **It has rows to spare.** The table has at least (constants + 3)
    rows, counting every constant when it is not within precision and the
    free ones when it is (see [free constants](#free-constants)).
 
@@ -342,6 +364,7 @@ these applies to the first answer:
 - it explains less than 90% of the target's variance and its median miss
   is over 5% of the target's value (or the target changes sign);
 - it misses more rows than allowed by more than 25% of their value;
+- it is not clean (rule 3), with what is wrong with its shape;
 - the search found no candidate, or none predicted the rows it was
   checked on better than their mean (or could be evaluated on enough of
   them).
@@ -463,7 +486,9 @@ is taken as noisy, and a law is what is wanted.
   chose that the data do not pin is written to the digits they support,
   the fewest significant digits within one standard error: a Cepheid
   slope known to 2% is `-1.41`, not `-sqrt(2)`. An answer that is no law
-  writes no constant by name.
+  writes no constant by name: a value the snap set to a name is written
+  to the fewest significant digits within one standard error (`0.79`,
+  not `0.7853981633974`; the `model` field keeps the value evaluated).
   Other names (`7*2**(1/4)`, `sqrt(e)`) still need the data to single
   them out (see [snapping](#the-selection-criterion)).
 - When a constant inside a function or power moves, the scales and the
@@ -644,7 +669,9 @@ evenly spaced), in nats.
   0 when they are read as exact settings (whichever costs less); s² is
   extra noise, either the same on every row or proportional to the
   predicted value (measurements good to a fraction of their size),
-  whichever costs less (½ ln n when not 0), at the level that makes the
+  whichever costs less, and only proportional on a target
+  [measured to a fraction of its size](#targets-spanning-decades)
+  (½ ln n when not 0), at the level that makes the
   rows cost least (searched over half decades below the mean squared
   residual, then refined); τ is
   1e-13 of the value, the evaluation's own precision. A row costs
@@ -657,6 +684,40 @@ evenly spaced), in nats.
 
 Two answers within half a nat of each other (about one standard error of
 one constant) count as equally supported, and the simpler is taken.
+
+## Targets spanning decades
+
+A target of one sign whose largest value is 100 to 1e6 times its smallest
+(body weights, event counts, river flows) is taken as measured to a
+fraction of its size: the error of a large value is large. Fitted as
+written, the few largest rows would decide every constant. On such a
+target:
+
+- **Log-linear laws are offered.** `ln y` is fitted by least squares on
+  `ln x` (a power law with a free exponent), `x` (an exponential with a
+  free rate) and `ln(x − e)` (a power law of a shifted column, the shift
+  searched below the column's smallest value), the terms chosen forward
+  while each lowers the cost of the fit, at most 3; these join the
+  search's candidates.
+- **Each answer is also fitted by its relative misses**, each row
+  weighted by the inverse of its predicted value, reweighted three times;
+  the [criterion](#the-selection-criterion), whose extra noise is
+  proportional to the prediction here, chooses between the two fits.
+- **Constants are written to the digits the data support** when the law
+  is not within precision: an exponent, rate or shift becomes a small
+  fraction (the grammar's exponents: 3/4, 3/2, 3) when within two
+  standard errors of it and never takes a name (an exponent of `pi` is
+  no law); every other constant is written to the fewest significant
+  digits within one standard error. The criterion and the cleaning
+  measure misses relative to the value.
+
+A power law whose exponent becomes one of the grammar's fractions is
+written as a power (`1.3*m2/r**2`); a free exponent, or a power of a
+shifted column, keeps the log form. 56 perch weighed by length (6 g to
+1.1 kg) give `0.0075*L**3.1` (written `exp(3.1*log(L))`); fitted as written they gave a contorted three-constant
+form. Past 1e6 the weighted solves keep too few digits (they square the
+range), and the target is fitted as written; `r2` is always the plain
+one, computed from the printed law on the values as written.
 
 ## How answers are ordered
 
@@ -748,7 +809,7 @@ timings print as well. Nothing else is written to stderr except errors.
 | status | meaning |
 |---|---|
 | 0 | a result was written, whatever its verdict |
-| 1 | the input could not be used, or the output could not be written |
+| 1 | the input could not be used, or the output could not be written (a full device, a closed pipe, or stdout closed when the program started, checked before the input is read; `-o` still writes its file then) |
 | 2 | invalid command line, or stdin is a terminal |
 | 3 | the memory limit (`--max-memory`) was reached before a result could be written |
 | 101 | an internal error; the message asks for a report |
@@ -785,13 +846,13 @@ options stop at the same point.
   no constant, six for a power law with one. Below 80
   rows the leave-one-out refits make scoring slower in proportion to the
   rows.
-- **Data spanning orders of magnitude.** Constants are fitted by least
-  squares on the target as written, so where the target spans decades
-  with errors proportional to its size (body weights, event counts, river
-  flows) the largest values decide the fit. A power law or exponential
-  there may be missed (no law found) or replaced by another form: 56
-  perch weighed by length gave `(4/pi)*exp(sqrt(L)) - 20`, not
-  `a*L**3.16`. Check such a law against a log-log plot.
+- **Data spanning orders of magnitude.** A target spanning 100 to 1e6
+  times is fitted by its relative misses
+  ([targets spanning decades](#targets-spanning-decades)); one spanning
+  more is fitted as written, and its largest values decide the
+  constants. Proportional scatter of tens of percent (mammals' metabolic
+  rates, ×1.5 about Kleiber's law) is no law under the
+  [reasonable-fit rule](#law).
 - **Families the search reaches poorly.** A sinusoid of unknown period
   (tides) and growth curves (logistic) are often not found.
 - **Noise.** On noisy data no answer is within precision, and the search

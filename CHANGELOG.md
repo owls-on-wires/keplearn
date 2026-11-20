@@ -1,5 +1,47 @@
 # Changelog
 
+## 2.1.0
+
+- **Targets spanning decades.** A one-signed target whose largest value
+  is 100 to 1e6 times its smallest is taken as measured to a fraction of
+  its size. Log-linear laws (power laws with free exponents, exponentials
+  with free rates, power laws of a shifted column) join the candidates;
+  each answer is also fitted by its relative misses (rows weighted by the
+  inverse of the prediction, reweighted three times), the criterion,
+  with proportional extra noise only, choosing; exponents, rates and
+  shifts take a small fraction within two standard errors and never a
+  name, and constants short of precision are written to the digits the
+  data support. 56 perch give `0.0075*L**3.1` (a contorted
+  three-constant form before); a river's rating curve gives
+  `4330*(h - 2.31)**1.6 + 450` (both printed in log form, `exp(3.1*log(L))`:
+  their exponents are free). Past 1e6 the target is fitted as written.
+- **A law short of the cells' precision is clean**: one term of powers
+  with at most one group and one exponential (of a scaled argument or a
+  free power), `log` alone, or two terms of whole powers; any other
+  function only of a scaled argument or of two or more columns; a
+  logarithm of one product of columns, alone or beside a power
+  (`0.5772*log(n) + 0.2887/n`). Six
+  filament temperatures no longer give `-6.77*T*cos(T) + 4.42`, a river
+  gauge `-26530*h + 15170*h*log(h) + 32373`, nor yeast growth a ratio of
+  `exp(pi*sqrt(t))`; `reason` says what is wrong with the shape. A
+  constant added inside a function is a phase, of a column to the first
+  power: `arccos(1 - 3/V**6)` is not clean.
+- A constant times `1/x` is written `k/x`, not `k*1/x` (Boyle's
+  `1406/volume`), in `model`, `symbolic`, `named`, `structure` and
+  `canonical`. A power law fitted in log form whose exponent becomes one
+  of the grammar's fractions is written as a power (`1.3*m2/r**2`, not
+  `1.3*m2*exp(-2*log(r))`). On such a target a free exponent, rate
+  or shift is written as a decimal, never as a fraction that only
+  looks structural (`10.17`, not `61/6`, for a fitted 10.167).
+- An answer that is no law writes a snapped named value to the digits
+  the data support (`0.79`, not `0.7853981633974`).
+- A result that cannot be written to stdout exits with status 1 and a
+  message: a full device (`> /dev/full`) panicked with status 101, and a
+  stdout closed at start (`>&-`) exited 0 with the result lost. The same
+  holds for `--help` and `--version`.
+- Acceptance test: Brofeldt's 1917 perch from Lake Laengelmavesi
+  (`fixtures/real/perch_length_weight.tsv`, from the JSE fishcatch data).
+
 ## 2.0.1
 
 - A named physical constant is not a free constant: `E = h*f` reports

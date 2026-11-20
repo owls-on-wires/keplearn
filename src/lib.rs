@@ -52,13 +52,15 @@ mod forms;
 
 mod guard;
 
+mod relative;
+
 pub mod summary;
 
 mod driver;
 #[cfg(test)]
 pub(crate) use driver::ingest;
 pub(crate) use driver::split_row;
-pub use driver::{run, run_text, Config};
+pub use driver::{mark_stdout_closed, run, run_text, write_stdout, Config};
 
 pub fn fuzz_parse(s: &str) {
     let _ = expr::Parser::parse(s);

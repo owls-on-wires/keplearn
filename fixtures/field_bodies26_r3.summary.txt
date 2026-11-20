@@ -2,5 +2,5 @@ period_years = distance_au**(3/2)                 law (r2 = 0.9999999981, 26 row
 constants: none free
 fit: largest miss 0.104% of the target's value (where the target is 0.241), more than the precision the cells are written to
 data: 26 rows, 1 column; rounding floor 1.9e-11 of the target's variance
-next best: period_years = 745*exp(0.008*distance_au) - 760    no law found
+next best: period_years = 14142000000*distance_au**2/(sqrt((1/distance_au + 2e20*distance_au)))    law
 note: column 'body' has no numeric values; it is dropped

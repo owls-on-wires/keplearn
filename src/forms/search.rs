@@ -20,6 +20,17 @@ pub(crate) fn nice_near(v: f64) -> Vec<f64> {
     vals
 }
 
+pub(crate) fn plain_decimal(v: f64) -> bool {
+    if v == 0.0 || !v.is_finite() {
+        return v == 0.0;
+    }
+    let mag = v.abs().log10().floor() as i32;
+    (1..=6).any(|d| {
+        let m = 10f64.powi(d - 1 - mag);
+        ((v * m).round() / m - v).abs() <= 1e-12 * v.abs()
+    })
+}
+
 pub(crate) fn written_cost(v: f64) -> usize {
     if !v.is_finite() {
         return UNWRITTEN_COST;
@@ -349,7 +360,15 @@ pub fn snap_by(
             };
             Some(f)
         };
-        gather(nice_near(fr.fitted.inner[k]), &mut build, &mut opts);
+        let vals: Vec<f64> = if crate::guard::relative() {
+            nice_near(fr.fitted.inner[k])
+                .into_iter()
+                .filter(|&c| crate::guard::structural_constant(c) || plain_decimal(c))
+                .collect()
+        } else {
+            nice_near(fr.fitted.inner[k])
+        };
+        gather(vals, &mut build, &mut opts);
         fr.fitted = pick(opts);
     }
     let t_fit = crate::forms::nf::eval_terms(e, x_fit, &fr.fitted.inner);

@@ -120,3 +120,53 @@ fn a_target_name_that_is_not_utf8_finds_its_column() {
     assert_eq!(o.status.code(), Some(2));
     assert!(String::from_utf8_lossy(&o.stderr).contains("not valid UTF-8"));
 }
+
+#[cfg(target_os = "linux")]
+fn run_redirected(redirect: &str, args: &str) -> (i32, String) {
+    let bin = env!("CARGO_BIN_EXE_keplearn");
+    let table = concat!(env!("CARGO_MANIFEST_DIR"), "/examples/gravity.tsv");
+    let o = Command::new("sh")
+        .arg("-c")
+        .arg(format!(
+            "{} \"{}\" --target force {} < \"{}\"",
+            redirect, bin, args, table
+        ))
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .output()
+        .unwrap();
+    (
+        o.status.code().unwrap_or(-1),
+        String::from_utf8_lossy(&o.stderr).into_owned(),
+    )
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_full_output_device_exits_with_status_1() {
+    let (code, err) = run_redirected("exec >/dev/full;", "");
+    assert_eq!(code, 1, "{}", err);
+    assert!(
+        err.contains("cannot write the result") && !err.contains("internal error"),
+        "{}",
+        err
+    );
+    let (code, err) = run_redirected("exec >/dev/full;", "--help");
+    assert_eq!(code, 1, "{}", err);
+}
+
+#[test]
+#[cfg(target_os = "linux")]
+fn a_closed_stdout_exits_with_status_1_unless_the_result_goes_to_a_file() {
+    let (code, err) = run_redirected("exec >&-;", "");
+    assert_eq!(code, 1, "{}", err);
+    assert!(err.contains("stdout is closed"), "{}", err);
+    let out = std::env::temp_dir().join(format!("keplearn-closed-{}.json", std::process::id()));
+    let (code, err) = run_redirected("exec >&-;", &format!("-o \"{}\"", out.display()));
+    let written = std::fs::read_to_string(&out).unwrap_or_default();
+    let _ = std::fs::remove_file(&out);
+    assert_eq!(code, 0, "{}", err);
+    assert!(written.contains("keplearn.result.v3"));
+    let (code, err) = run_redirected("exec >/dev/null;", "");
+    assert_eq!(code, 0, "{}", err);
+}
