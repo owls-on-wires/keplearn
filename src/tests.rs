@@ -1093,14 +1093,8 @@ fn a_copy_of_the_target_and_a_second_target_name() {
                 format!("{},{},{}\n", 0.5 * x, x, 1.5 * x)
             })
             .collect::<String>();
-    let j = run_json(&t);
-    assert_eq!(
-        j.get("names")
-            .and_then(|n| n.get("columns"))
-            .and_then(|c| c.as_arr())
-            .map(|c| c.len()),
-        Some(1)
-    );
+    let e = run_text(&t, test_cfg()).unwrap_err();
+    assert!(e.contains("two columns are named 'y'"), "{}", e);
 }
 
 #[test]
@@ -1233,7 +1227,7 @@ fn a_wide_span_target_ranks_approximate_answers_by_relative_misses() {
 }
 
 #[test]
-fn row_index_columns_are_dropped_and_repeated_names_renamed() {
+fn row_index_columns_are_dropped_and_repeated_names_refused() {
     let mut s = 21u64;
     let t: String = "rownames,a,b,y\n".to_string()
         + &(1..=30)
@@ -1266,14 +1260,73 @@ fn row_index_columns_are_dropped_and_repeated_names_renamed() {
                 format!("{},{},{}\n", a, b, a + b)
             })
             .collect::<String>();
-    let j = run_json(&t);
-    let top = j
-        .get("results")
-        .and_then(|r| r.as_arr())
-        .and_then(|r| r.first())
-        .cloned()
-        .unwrap();
-    assert_eq!(top.get("named").and_then(|v| v.as_str()), Some("x + x_2"));
+    let e = run_text(&t, test_cfg()).unwrap_err();
+    assert!(e.contains("two columns are named 'x'"), "{}", e);
+}
+
+#[test]
+fn a_copied_or_rescaled_column_is_dropped_and_the_law_found() {
+    let mut s = 7u64;
+    let rows: Vec<(f64, f64)> = (0..27)
+        .map(|_| (1.0 + 3.0 * lcg(&mut s), 5.0 + 5.0 * lcg(&mut s)))
+        .collect();
+    for (k, warn) in [
+        (1.0, "repeats column 'lam'"),
+        (2.54, "is 2.54 times column 'lam'"),
+    ] {
+        let t: String = "lam,temp,lam2,y\n".to_string()
+            + &rows
+                .iter()
+                .map(|(l, m)| {
+                    let l = (l * 1e4).round() / 1e4;
+                    format!("{:.4},{:.4},{:.6},{:.4}\n", l, m, k * l, l * m)
+                })
+                .collect::<String>();
+        let out = run_text(&t, test_cfg()).unwrap();
+        assert!(out.contains(warn), "k {}: {}", k, out);
+        let j = crate::forms::json::parse(&out).unwrap();
+        assert_eq!(
+            j.get("verdict").and_then(|v| v.as_str()),
+            Some("law"),
+            "k {}: {}",
+            k,
+            out
+        );
+        let top = j
+            .get("results")
+            .and_then(|r| r.as_arr())
+            .and_then(|r| r.first())
+            .cloned()
+            .unwrap();
+        assert_eq!(
+            top.get("named").and_then(|v| v.as_str()),
+            Some("lam*temp"),
+            "k {}",
+            k
+        );
+    }
+    let a = [1.0, 2.0, 3.0, 2.0, 1.0, 3.0];
+    let b = [2.0, 4.0, 6.0, 4.0, 2.0, 6.0];
+    let q = [1.0; 6];
+    assert_eq!(crate::driver::copy_factor(&a, &q, &b, &q), None);
+    let qf = [0.001; 6];
+    assert_eq!(crate::driver::copy_factor(&a, &qf, &b, &qf), Some(2.0));
+}
+
+#[test]
+fn least_squares_gives_a_dependent_column_no_weight() {
+    let n = 40usize;
+    let x: Vec<f64> = (0..n).map(|i| 0.5 + i as f64 * 0.1).collect();
+    let z: Vec<f64> = (0..n).map(|i| ((i * 7) % 11) as f64 + 1.0).collect();
+    let y: Vec<f64> = (0..n).map(|i| 2.0 * x[i] - 3.0 * z[i] + 1.0).collect();
+    let x2: Vec<f64> = x.iter().map(|v| 2.54 * v + 0.3).collect();
+    let sol = solve_ls(&[x.clone(), z.clone(), x2], &y).expect("solvable");
+    assert!((sol[0] - 2.0).abs() < 1e-8 && sol[2] == 0.0, "{:?}", sol);
+    assert!(
+        (sol[1] + 3.0).abs() < 1e-8 && (sol[3] - 1.0).abs() < 1e-8,
+        "{:?}",
+        sol
+    );
 }
 
 #[test]

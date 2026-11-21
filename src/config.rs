@@ -429,6 +429,9 @@ pub(crate) const SEARCH_SHARE: f64 = 0.8;
 /// The canonical stage fits each finalist on at most this many training
 /// rows (a three-factor log-linear form took 40 s on 1M rows fitted on all).
 pub(crate) const CANON_MAX_ROWS: usize = 10_000;
+/// A feature is taken as a constant multiple of an earlier one when they
+/// agree on every row to digits finer than this share of its range.
+pub(crate) const COPY_PRECISION: f64 = 1e-3;
 
 /// Rows below which nothing is searched: a law with one constant is fitted
 /// with an offset (fit_min_rows(2) rows) and checked by leaving each row out,

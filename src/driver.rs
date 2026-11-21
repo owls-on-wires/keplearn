@@ -93,6 +93,41 @@ pub(crate) fn cell_quantum(s: &str) -> f64 {
     10f64.powi(exp - decimals + zeros)
 }
 
+pub(crate) fn copy_factor(a: &[f64], qa: &[f64], b: &[f64], qb: &[f64]) -> Option<f64> {
+    if a.is_empty() || a.len() != b.len() {
+        return None;
+    }
+    if a == b {
+        return Some(1.0);
+    }
+    let (sab, saa) = a
+        .iter()
+        .zip(b)
+        .fold((0.0, 0.0), |(s, t), (x, y)| (s + x * y, t + x * x));
+    let k = sab / saa;
+    if !k.is_finite() || k == 0.0 {
+        return None;
+    }
+    let (lo, hi) = b
+        .iter()
+        .fold((f64::INFINITY, f64::NEG_INFINITY), |(l, h), v| {
+            (l.min(*v), h.max(*v))
+        });
+    let range = hi - lo;
+    if !(range > 0.0) {
+        return None;
+    }
+    let mut widest = 0.0f64;
+    for r in 0..a.len() {
+        let tol = 0.5 * qb[r] + 0.5 * k.abs() * qa[r] + 1e-12 * b[r].abs().max((k * a[r]).abs());
+        if (b[r] - k * a[r]).abs() > tol {
+            return None;
+        }
+        widest = widest.max(tol);
+    }
+    (widest <= crate::config::COPY_PRECISION * range).then_some(k)
+}
+
 fn printable(s: &str) -> String {
     let mut out: String = s
         .chars()
@@ -176,24 +211,13 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     let header: Vec<String> = split_row(head_line, delim);
     let mut warnings: Vec<String> = Vec::new();
     let mut seen_names: std::collections::HashSet<&str> = std::collections::HashSet::new();
-    let mut warned: std::collections::HashSet<&str> = std::collections::HashSet::new();
     for h in header.iter() {
         let t = h.trim();
-        if !seen_names.insert(t) && !t.is_empty() && warned.insert(t) {
-            warnings
-                .push(
-                    if t == target_col {
-                        format!(
-                            "duplicate column name '{}' in header; the first such column is the target",
-                            t
-                        )
-                    } else {
-                        format!(
-                            "duplicate column name '{}' in header; the later columns are renamed '{}_2', '{}_3', ...",
-                            t, t, t
-                        )
-                    },
-                );
+        if !t.is_empty() && !seen_names.insert(t) {
+            return Err(format!(
+                "two columns are named '{}'; rename one (column names must differ)",
+                printable(t)
+            ));
         }
     }
     if header.iter().all(|h| h.trim().parse::<f64>().is_ok())
@@ -271,13 +295,6 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
     let numeric = |i: usize| is_numeric[i];
     let mut feat_idx: Vec<usize> = Vec::new();
     for i in (0..header.len()).filter(|&i| i != target_idx) {
-        if header[i].trim() == target_col {
-            warnings.push(format!(
-                "a second column is named '{}' like the target; it is dropped",
-                target_col
-            ));
-            continue;
-        }
         if numeric(i) {
             feat_idx.push(i);
         } else {
@@ -412,6 +429,35 @@ pub(crate) fn ingest(input: &str, target_col: &str) -> Result<Ingest, String> {
             "every feature column has the same value on every row; nothing can explain the target"
                 .into(),
         );
+    }
+    let mut j = 1;
+    while j < features.len() {
+        match (0..j).find_map(|i| {
+            copy_factor(&features[i], &q_features[i], &features[j], &q_features[j]).map(|k| (i, k))
+        }) {
+            Some(i_k) => {
+                let (i, k) = i_k;
+                warnings
+                    .push(
+                        if k == 1.0 {
+                            format!(
+                                "column '{}' repeats column '{}' on every row; it is dropped",
+                                names[j], names[i]
+                            )
+                        } else {
+                            format!(
+                                "column '{}' is {} times column '{}' on every row (to its written digits); it is dropped",
+                                names[j], crate ::output::tidy_number(k, 6), names[i]
+                            )
+                        },
+                    );
+                features.remove(j);
+                q_features.remove(j);
+                s_features.remove(j);
+                names.remove(j);
+            }
+            None => j += 1,
+        }
     }
     if features.len() > SCREEN_COLUMNS {
         let keep = screen_columns(&features, &target, SCREEN_COLUMNS);

@@ -544,6 +544,73 @@ pub(crate) fn residuals_structured(basis: &[Vec<f64>], e: &[f64]) -> Option<bool
 }
 
 pub(crate) fn solve_ls(basis: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
+    let dep = dependent_columns(basis, y);
+    if !dep.iter().any(|d| *d) {
+        return solve_ls_full(basis, y);
+    }
+    let kept: Vec<Vec<f64>> = basis
+        .iter()
+        .zip(&dep)
+        .filter(|(_, d)| !**d)
+        .map(|(b, _)| b.clone())
+        .collect();
+    let sub = solve_ls_full(&kept, y)?;
+    let mut sol = Vec::with_capacity(basis.len() + 1);
+    let mut it = sub[..kept.len()].iter();
+    for d in &dep {
+        sol.push(if *d { 0.0 } else { *it.next()? });
+    }
+    sol.push(sub[kept.len()]);
+    Some(sol)
+}
+
+const LS_DEPENDENT: f64 = 1e-10;
+
+fn dependent_columns(basis: &[Vec<f64>], y: &[f64]) -> Vec<bool> {
+    let k = basis.len();
+    let m = k + 1;
+    let mut g = vec![vec![0.0f64; m]; m];
+    let mut x = vec![0.0f64; m];
+    for r in 0..y.len() {
+        if !y[r].is_finite() || basis.iter().any(|b| !b[r].is_finite()) {
+            continue;
+        }
+        x[0] = 1.0;
+        for (i, b) in basis.iter().enumerate() {
+            x[i + 1] = b[r];
+        }
+        for i in 0..m {
+            for j in 0..m {
+                g[i][j] += x[i] * x[j];
+            }
+        }
+    }
+    let mut dep = vec![false; k];
+    if g[0][0] < 1.0 {
+        return dep;
+    }
+    let scale: Vec<f64> = (0..m)
+        .map(|i| g[i][i] - g[0][i] * g[0][i] / g[0][0])
+        .collect();
+    for p in 0..m {
+        let s = if p == 0 { g[0][0] } else { scale[p] };
+        if !(g[p][p] > LS_DEPENDENT * s) || !(s > 0.0) {
+            if p > 0 {
+                dep[p - 1] = true;
+            }
+            continue;
+        }
+        for r in (p + 1)..m {
+            let f = g[r][p] / g[p][p];
+            for c in p..m {
+                g[r][c] -= f * g[p][c];
+            }
+        }
+    }
+    dep
+}
+
+fn solve_ls_full(basis: &[Vec<f64>], y: &[f64]) -> Option<Vec<f64>> {
     let k = basis.len();
     let m = k + 1;
     let n = y.len();

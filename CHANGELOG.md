@@ -1,5 +1,29 @@
 # Changelog
 
+## 2.1.3
+
+Fixes from a blind review of 2.1.2.
+
+- **A copied or rescaled column no longer hides the law.** 27 rows of
+  `lam*temp` with an exact copy of `lam` gave "no law found": the
+  power-law fit's least-squares system was singular and returned
+  nothing, so no candidate was left. The copy in other units (2.54
+  times) gave a false law, `1.128*lam**2*temp/lam2**(3/4) + 4` at
+  r2 0.99, its exponents split between the two columns. Now a feature
+  equal to an earlier one times a constant on every row, to the digits
+  written in its cells (finer than 0.1% of its range), is dropped with
+  a warning, and the least-squares fits give a column that depends on
+  the earlier ones (such as `r` and `r**2` in logs) the coefficient 0
+  instead of failing. Both tables give `lam*temp`.
+- **Two columns with the same name are refused** (exit status 1, `two
+  columns are named '...'`); they were renamed `name_2`, which put a
+  name the table does not have into the answer, and left `--target`
+  ambiguous (a second column named as the target was dropped). Unnamed
+  columns may still repeat.
+- Tests: the copied and rescaled column, a dependent least-squares
+  column, the repeated name refused; 85 library and 8 command-line
+  tests.
+
 ## 2.1.2
 
 Fixes from a blind review of 2.1.1.

@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 2.1.2, result schema `keplearn.result.v3`.
+Version 2.1.3, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -56,9 +56,20 @@ is a literal quote. Blank lines are ignored.
   large columns) can be screened out; search such columns as a subset.
 - A column with values beyond 1e150 gets a warning: their squares
   overflow, and laws over them may not be found. Rescale such a column.
-- A duplicated column name produces a warning; later feature columns
-  with the same name are renamed `name_2`, `name_3`, ... so that answers
-  read unambiguously.
+- Two columns with the same name are refused (exit status 1): neither an
+  answer nor `--target` could say which one it means. Unnamed columns may
+  repeat.
+- A feature that equals an earlier feature times a constant on every row
+  is dropped with a warning: a copy (`column 'b' repeats column 'a'`), or
+  the same quantity in other units (`column 'L_cm' is 2.54 times
+  column 'L_in'`). The two must agree to the digits written in their
+  cells, and those digits must be finer than 0.1% of the column's range,
+  so coarse columns (small integers) that happen to be proportional are
+  kept. Such a column adds nothing to a law; kept, it left the power-law
+  fit's exponents undetermined (no law found on a 27-row product law,
+  or a false law with the copy in other units). A column that is another
+  to a power (r and r²) is kept; the fits give it no weight where it adds
+  nothing.
 - A row index is not a variable: a feature column named as one (an empty
   name, `rownames`, `row.names`, `row_names`, `index`, `id`, or a name
   starting `Unnamed:`) whose values count up from 0 or 1 in row order is
@@ -93,6 +104,7 @@ their written places. The rounding model matters only to the verdicts (see [the 
 | binary data (more than a tenth of the first 4 KiB is control bytes or undecodable) | `the input is not text ...` |
 | text starting with `{` or `[` | `the input looks like JSON ...` |
 | a header with no tab or comma | `the header has a single column (...)` |
+| two columns with the same name | `two columns are named '...'; rename one (column names must differ)` |
 | a first row made of numbers that does not contain the target name | `the first row (...) holds numbers, not column names ...` |
 | no column named as the target | `target column '...' not found; columns are: ...` |
 | no data row with as many fields as the header | `no data row has the header's N fields (most rows have M); check that every row has a value for each column` |
@@ -150,7 +162,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.2`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.3`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -176,7 +188,7 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
 | `rows` | integer | data rows read (after skipped rows) |
-| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, skipped rows, duplicate names, more than 20 columns, the columns kept above 30, invalid UTF-8, values that overflow, a constant target) and on the first answer (a fit within the cells' precision only with the features read as rounded; a rounding floor not estimated) |
+| `warnings` | array of strings | notes on the input (dropped or constant columns, a column equal to the target, a copied or rescaled column, skipped rows, more than 20 columns, the columns kept above 30, invalid UTF-8, values that overflow, a constant target) and on the first answer (a fit within the cells' precision only with the features read as rounded; a rounding floor not estimated) |
 | `time_ms` | integer | elapsed milliseconds; present only with `--timing` |
 
 `results` is empty only for a table too small to search (fewer than 5
