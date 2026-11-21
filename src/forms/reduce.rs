@@ -228,7 +228,7 @@ fn stage_set(sub: &[Vec<f64>], stage: u8) -> Option<AtomSet> {
     let (keep, vals) = new_atoms(sub, terms, &mut keys, BASIS_ATOMS);
     Some(AtomSet {
         keep,
-        prep: crate::forms::pursuit::Prep::new(vals),
+        prep: crate::forms::pursuit::Prep::new(vals)?,
         keys,
     })
 }
@@ -583,7 +583,7 @@ fn rational_base(sub: &[Vec<f64>]) -> Option<RationalBase> {
         vals.push(v);
         names.push(plain(e));
     }
-    let prep = crate::forms::pursuit::Prep::new(vals.clone());
+    let prep = crate::forms::pursuit::Prep::new(vals.clone())?;
     Some(RationalBase { names, vals, prep })
 }
 
@@ -642,7 +642,7 @@ pub fn rational(
             }
             den_vals.push(v.iter().zip(&ys).map(|(a, b)| a * b).collect());
         }
-        let prep = fprep.extend(den_vals);
+        let prep = fprep.extend(den_vals)?;
         let atoms = &prep.atoms;
         let den_names: Vec<&String> = names.iter().filter(|nm| **nm != g0name).collect();
         let mut allowed = vec![true; atoms.len()];
@@ -773,7 +773,9 @@ pub fn basis_ext(
                 &mut keys,
                 BASIS_ATOMS,
             );
-            let prep = set.prep.extend(vs);
+            let Some(prep) = set.prep.extend(vs) else {
+                continue;
+            };
             crate::forms::pursuit::pursue(&prep, &ys, BASIS_MAX_TERMS, 1).map(|ch| {
                 ch.into_iter()
                     .map(|k| {

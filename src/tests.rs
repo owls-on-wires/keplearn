@@ -2077,3 +2077,43 @@ fn residuals_of_a_missed_shape_are_structured_and_noise_is_not() {
         Some(false)
     );
 }
+
+#[test]
+fn a_large_table_keeps_its_law_under_a_short_budget() {
+    let t = csv_table(
+        200_000,
+        &[(1.0, 10.0), (1.0, 10.0), (1.0, 10.0)],
+        |x| 3.0 * x[0] * x[1] / x[2] + 2.0,
+        2024,
+    );
+    let mut cfg = test_cfg();
+    cfg.timeout_ms = 3000;
+    let out = run_text(&t, cfg).expect("run_text");
+    let j = crate::forms::json::parse(&out).expect("json");
+    let top = &j.get("results").and_then(|r| r.as_arr()).expect("results")[0];
+    assert_eq!(
+        j.get("verdict").and_then(|v| v.as_str()),
+        Some("law"),
+        "{}",
+        out
+    );
+    assert_eq!(
+        top.get("model").and_then(|v| v.as_str()),
+        Some("3*x1*x2/x3 + 2"),
+        "{}",
+        out
+    );
+}
+
+#[test]
+fn an_added_zero_is_not_reported() {
+    use crate::output::drop_zero_terms as d;
+    assert_eq!(
+        d("0.5/(sqrt(x1)*(1/((x1**(3/4)*x2 - 0.13)**2) + 0))"),
+        "0.5/(sqrt(x1)*(1/((x1**(3/4)*x2 - 0.13)**2)))"
+    );
+    assert_eq!(d("x1 - 0"), "x1");
+    assert_eq!(d("x1 + 0.5"), "x1 + 0.5");
+    assert_eq!(d("x1 + 0.05*x2"), "x1 + 0.05*x2");
+    assert_eq!(d("(x1 + 0)**2 + 10"), "(x1)**2 + 10");
+}

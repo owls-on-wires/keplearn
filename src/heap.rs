@@ -14,6 +14,8 @@ static LIMIT_MB: AtomicUsize = AtomicUsize::new(0);
 
 static ENDING: AtomicBool = AtomicBool::new(false);
 
+static SOFT_HIT: AtomicBool = AtomicBool::new(false);
+
 pub(crate) const SOFT_SHARE: f64 = 0.75;
 
 pub const EXIT_MEMORY: i32 = 3;
@@ -28,6 +30,7 @@ pub(crate) fn set_limit_mb(mb: u64) {
         HARD.store(hard, Relaxed);
     }
     LIMIT_MB.store(mb as usize, Relaxed);
+    SOFT_HIT.store(false, Relaxed);
 }
 
 pub(crate) fn live_mb() -> usize {
@@ -36,7 +39,15 @@ pub(crate) fn live_mb() -> usize {
 
 #[inline]
 pub(crate) fn over_soft() -> bool {
-    LIVE.load(Relaxed) > SOFT.load(Relaxed)
+    LIVE.load(Relaxed) > SOFT.load(Relaxed) || SOFT_HIT.load(Relaxed)
+}
+
+pub(crate) fn fits(bytes: usize) -> bool {
+    let ok = LIVE.load(Relaxed).saturating_add(bytes) <= SOFT.load(Relaxed);
+    if !ok {
+        SOFT_HIT.store(true, Relaxed);
+    }
+    ok
 }
 
 #[cold]

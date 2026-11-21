@@ -426,6 +426,9 @@ pub(crate) const COND_CANCEL_MAX: f64 = 1e6;
 /// the share of a --timeout budget the search may use; the rest is for
 /// the answers' assembly (floor, canonical stage, scoring)
 pub(crate) const SEARCH_SHARE: f64 = 0.8;
+/// The canonical stage fits each finalist on at most this many training
+/// rows (a three-factor log-linear form took 40 s on 1M rows fitted on all).
+pub(crate) const CANON_MAX_ROWS: usize = 10_000;
 
 /// Rows below which nothing is searched: a law with one constant is fitted
 /// with an offset (fit_min_rows(2) rows) and checked by leaving each row out,

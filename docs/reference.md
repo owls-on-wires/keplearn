@@ -1,6 +1,6 @@
 # Keplearn reference
 
-Version 2.1.1, result schema `keplearn.result.v3`.
+Version 2.1.2, result schema `keplearn.result.v3`.
 
 This page documents everything Keplearn reads, every option, every field it
 writes, and the rules behind its verdicts. `keplearn --help` is the short
@@ -150,7 +150,7 @@ the answers are negated back; the output is in the target's own sign.
 | `--dump-candidates FILE` | none | write the scored candidates (at most 200) to FILE as JSON (a diagnostic) |
 | `--seed N`, `--max-evals N` | | accepted and ignored: the search is deterministic and bounded by `--timeout` |
 | `-h`, `--help` | | print the help and exit |
-| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.1`) and exit |
+| `-V`, `--version` | | print `keplearn` and the version (`keplearn 2.1.2`) and exit |
 
 For compatibility with older wrappers, `--pool`, `--reject`,
 `--prune-cols`, `--reeval-cap`, `--max-arity` and `--compose` are
@@ -171,7 +171,7 @@ By default stdout holds exactly one JSON object and nothing else. With
 | `verdict` | string | the first answer's verdict: `law` or `no law found` (see [verdicts](#verdicts)) |
 | `reason` | string or null | why no law was found; null for a law |
 | `simpler_law` | integer or null | when the first answer is a law: the index in `results` of a later law with fewer free constants, no more nodes and an `r2` of at least 0.98 (the fewest constants, then the highest `r2`); a second effect in real data can put a longer law first (the giants' rotation in NASA's surface gravities), and this keeps the simpler one in view. Null otherwise |
-| `stopped_by` | string | `exact_exit` (an answer within the cells' precision ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out) or `memory` (the heap reached 75% of `--max-memory`) |
+| `stopped_by` | string | `exact_exit` (an answer within the cells' precision ended the search), `frontier_exhausted` (the search finished) or `timeout` (the budget ran out, in the search or while the answers were assembled) or `memory` (the heap reached 75% of `--max-memory`) |
 | `validation` | string | `holdout` (80 rows or more) or `leave-one-out` (fewer); see [scoring](#scoring) |
 | `noise_floor` | number | the rounding floor: the error the cells' written precision implies, as a fraction of the target's variance; 0 for full-precision cells, and also 0 when it was not estimated (a warning says so, see [the rounding floor](#the-rounding-floor)) |
 | `names` | object | `{"target": ..., "columns": [...]}`: the target's name and the kept feature columns in `x1..xN` order |
@@ -757,9 +757,12 @@ table to writing the result, not just the search:
 
 - the search stops at 80% of the budget;
 - the remaining 20% assembles the answers: the rounding floor, the
-  canonical form of each candidate (smallest first), and the scores. No
-  new candidate is started once the budget is spent, and at least one is
-  always finished.
+  canonical form of each candidate (one the search confirmed exact
+  first, then smallest first, each fitted on at most 10,000 rows), and
+  the scores. No new candidate is started once the budget is spent, and
+  at least one is always finished; when candidates are left unexamined,
+  `stopped_by` is `timeout` (or `memory`) even if the search itself had
+  ended early. 1,000,000 rows of a clean law give it in about 3 s.
 
 The first search step (the root of the search) always completes, but it
 checks the deadline inside its larger parts (the term library, the
@@ -777,20 +780,24 @@ program holds, counted at every allocation:
 
 - past 75% of the limit the search stops as it does when the time budget
   runs out (`stopped_by: memory`), and the answers found so far are
-  assembled and written;
+  assembled and written; a large block (the sum-of-terms step's prepared
+  terms) that would not fit under the 75% is not taken, and the search
+  stops there the same way (300 rows of six noisy columns under
+  `--max-memory 64` write a result);
 - an allocation that would pass the limit ends the program with exit
-  status 3 and a message on stderr, and nothing on stdout.
+  status 3 and a message on stderr, and nothing on stdout (under about
+  10 MB the table's setup alone does).
 
 The count is of the bytes the program asks for; the process's resident
-memory runs somewhat above it (the allocator's own overhead). A table
-whose law is found early stays in tens of megabytes (13 MB for a clean
-three-column law on 60 rows). A search that runs to its budget fills
-the library of prepared terms: measured peaks are 185 to 190 MB on
-100- and 120-row tables of three columns (noisy or unrelated), 435 MB
-on 1,000 rows of five columns, and 170 to 190 MB at 30 searched columns
-on 50 and 200 rows. The sum-of-terms step holds up to two sets of 4,000
-prepared library terms, about 128 MB each, on tables of many columns;
-a 35-column table screened to 30 measured 430 MB.
+memory runs above it (the allocator's own overhead and freed pages not
+yet returned). A table whose law is found early stays in tens of
+megabytes (13 MB for a clean three-column law on 60 rows). A search
+that runs to its budget fills the library of prepared terms; resident
+peaks measured at the 60 s default: 190 MB on 100- and 120-row tables of
+three columns, 470 MB on 1,000 rows of five columns, 575 MB on 300 rows
+of six columns of noise, 485 MB at 30 columns of 200 rows. Memory grows
+with the columns more than with the rows: it is not a small multiple of
+the table's size. Use `--max-memory` to bound it.
 
 An answer within precision ends the search early (`stopped_by: exact_exit`) when its
 canonical form is within precision, reduced, holds on the rows at the edges of the
@@ -843,7 +850,7 @@ options stop at the same point.
   −2.21 ± 0.15 and pass the test (p 0.08), and `c*M/R**2` is found.
 - **Columns.** Two to five columns work best. Irrelevant columns drop out
   of the answer, but every column widens the search: thirty columns take
-  about 7 s and 170 MB to 430 MB even for an easy law
+  seconds and several hundred MB even for an easy law
   ([memory limit](#memory-limit)). Above 30 columns the search
   uses the 30 most related to the target (see [input](#input)); a
   two-column law among 45 to 400 columns of 50 or 200 rows was found

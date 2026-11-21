@@ -98,7 +98,7 @@ fn printable(s: &str) -> String {
         .chars()
         .take(80)
         .map(|c| {
-            if c.is_control() || c == '\u{fffd}' {
+            if c.is_control() {
                 format!("\\u{{{:x}}}", c as u32)
             } else {
                 c.to_string()
@@ -974,6 +974,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
     let mut early = false;
     let mut bound: Option<usize> = None;
     let mut timed_out = false;
+    let mut assembly_cut = false;
     let mut memory_stop = false;
     let mut turn_ctr: u64 = 0;
     let mut any_expanded = false;
@@ -1372,17 +1373,24 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
         arm_deadline_at(
             (timeout_ms > 0).then(|| t0 + std::time::Duration::from_millis(timeout_ms)),
         );
-        finalists.sort_by(|a, b| a.nodes.cmp(&b.nodes).then(b.gate_r2.total_cmp(&a.gate_r2)));
+        finalists.sort_by(|a, b| {
+            (a.gate_r2 < EXACT_EXIT_R2)
+                .cmp(&(b.gate_r2 < EXACT_EXIT_R2))
+                .then(a.nodes.cmp(&b.nodes))
+                .then(b.gate_r2.total_cmp(&a.gate_r2))
+        });
+        let canon_n = train_n.min(crate::config::CANON_MAX_ROWS);
         for mut c in finalists.drain(..) {
             if !kept.is_empty() && out_of_budget() {
                 dropped += 1;
+                assembly_cut = true;
                 continue;
             }
             let tc = Instant::now();
             let ans = answers
                 .entry(c.model.clone())
                 .or_insert_with(|| {
-                    crate::guard::canonical_answer(&c.model, &features, &target, n_cols, train_n)
+                    crate::guard::canonical_answer(&c.model, &features, &target, n_cols, canon_n)
                 })
                 .clone();
             if crate::output::verbose() && tc.elapsed().as_millis() > 1000 {
@@ -1890,9 +1898,11 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 crate::guard::unnamed_answer(&c.model, &features, &target, n_cols, train_n)
                     .unwrap_or_else(|| c.model.clone())
             };
+            let sym = crate::output::drop_zero_terms(&sym);
+            let model = crate::output::drop_zero_terms(&c.model);
             results.push(crate::output::ResultObj {
-                expr: out_expr.to_string(),
-                model: c.model.clone(),
+                expr: crate::output::drop_zero_terms(out_expr),
+                model: model.clone(),
                 r2: out_r2[e.ci],
                 search_r2: Some(c.fit_r2),
                 holdout_r2: out_ho[e.ci],
@@ -1901,7 +1911,7 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
                 columns: out_cols.to_vec(),
                 uses: crate::output::used_columns(&c.model, &names),
                 structure: e.canon,
-                canonical: Some(c.model.clone()),
+                canonical: Some(model),
                 verdict: if is_law { "law" } else { "no law found" },
                 named: crate::output::named_model(&sym, &names),
                 symbolic: sym,
@@ -1918,7 +1928,13 @@ pub fn run_text(input: &str, cfg: Config) -> Result<String, String> {
             crate::heap::live_mb()
         );
     }
-    let stopped_by = if early {
+    let stopped_by = if assembly_cut {
+        if crate::heap::over_soft() {
+            "memory"
+        } else {
+            "timeout"
+        }
+    } else if early {
         "exact_exit"
     } else if memory_stop || (timed_out && crate::heap::over_soft()) {
         "memory"

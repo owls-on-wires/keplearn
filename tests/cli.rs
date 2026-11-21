@@ -170,3 +170,51 @@ fn a_closed_stdout_exits_with_status_1_unless_the_result_goes_to_a_file() {
     let (code, err) = run_redirected("exec >/dev/null;", "");
     assert_eq!(code, 0, "{}", err);
 }
+
+#[test]
+fn a_prepared_term_set_over_the_soft_limit_stops_the_search_with_a_result() {
+    let mut s = 11u64;
+    let mut next = || {
+        s = s
+            .wrapping_mul(6364136223846793005)
+            .wrapping_add(1442695040888963407);
+        (s >> 11) as f64 / (1u64 << 53) as f64
+    };
+    let mut t = String::from("a\tb\tc\td\te\tf\ty\n");
+    for _ in 0..300 {
+        let row: Vec<String> = (0..6)
+            .map(|_| format!("{:.6}", 1.0 + 99.0 * next()))
+            .collect();
+        t += &format!("{}\t{:.6}\n", row.join("\t"), next() - 0.5);
+    }
+    let (code, out, err) = run(&["--target", "y", "--max-memory", "64"], &t);
+    assert_eq!(code, 0, "{}", err);
+    assert!(out.contains("\"stopped_by\":\"memory\""), "{}", out);
+}
+
+#[test]
+fn an_undecodable_byte_in_a_name_is_shown_as_the_replacement_character() {
+    let mut c = Command::new(env!("CARGO_BIN_EXE_keplearn"))
+        .args(["--target", "période_min"])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::piped())
+        .spawn()
+        .unwrap();
+    c.stdin
+        .take()
+        .unwrap()
+        .write_all(
+            b"a_km,p\xe9riode_min\n7000,97\n8000,119\n9000,142\n10000,166\n11000,191\n12000,218\n",
+        )
+        .unwrap();
+    let o = c.wait_with_output().unwrap();
+    let err = String::from_utf8_lossy(&o.stderr);
+    assert_eq!(o.status.code(), Some(1), "{}", err);
+    assert!(
+        err.contains("columns are: a_km, p\u{fffd}riode_min"),
+        "{}",
+        err
+    );
+    assert!(!err.contains("\\u{"), "{}", err);
+}

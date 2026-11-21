@@ -456,6 +456,28 @@ pub(crate) fn used_columns(model: &str, names: &[String]) -> Vec<String> {
         .collect()
 }
 
+pub(crate) fn drop_zero_terms(e: &str) -> String {
+    let b = e.as_bytes();
+    let mut out = String::with_capacity(e.len());
+    let mut i = 0;
+    while i < b.len() {
+        if i + 4 <= b.len()
+            && b[i] == b' '
+            && (b[i + 1] == b'+' || b[i + 1] == b'-')
+            && b[i + 2] == b' '
+            && b[i + 3] == b'0'
+            && (i + 4 == b.len() || b[i + 4] == b')')
+        {
+            i += 4;
+            continue;
+        }
+        let ch = e[i..].chars().next().unwrap();
+        out.push(ch);
+        i += ch.len_utf8();
+    }
+    out
+}
+
 pub(crate) fn tidy(e: &str, digits: usize) -> String {
     let b = e.as_bytes();
     let mut out = String::with_capacity(e.len());

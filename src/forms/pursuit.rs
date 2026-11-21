@@ -15,7 +15,7 @@ impl Prep {
         c.iter().map(|x| x / s).collect()
     }
 
-    pub(crate) fn new(atoms: Vec<Vec<f64>>) -> Prep {
+    pub(crate) fn new(atoms: Vec<Vec<f64>>) -> Option<Prep> {
         Prep {
             atoms: Vec::new(),
             ac: Vec::new(),
@@ -24,9 +24,14 @@ impl Prep {
         .extend(atoms)
     }
 
-    pub(crate) fn extend(&self, extra: Vec<Vec<f64>>) -> Prep {
+    pub(crate) fn extend(&self, extra: Vec<Vec<f64>>) -> Option<Prep> {
         let n0 = self.atoms.len();
         let na = n0 + extra.len();
+        let rows = self.atoms.first().or(extra.first()).map_or(0, |v| v.len());
+        let bytes = 8 * (na * na + 2 * na * rows);
+        if !crate::heap::fits(bytes) {
+            return None;
+        }
         let mut ac = self.ac.clone();
         ac.extend(extra.iter().map(|v| Prep::center(v)));
         let mut gram = vec![0.0f64; na * na];
@@ -42,7 +47,7 @@ impl Prep {
         }
         let mut atoms = self.atoms.clone();
         atoms.extend(extra);
-        Prep { atoms, ac, gram }
+        Some(Prep { atoms, ac, gram })
     }
 }
 

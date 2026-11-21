@@ -1,5 +1,36 @@
 # Changelog
 
+## 2.1.2
+
+Fixes from a blind review of 2.1.1.
+
+- **A large table keeps its law under a budget.** The canonical stage
+  takes a finalist the search confirmed exact first, and fits each
+  finalist on at most 10,000 training rows (scores still use every row).
+  200,000 rows of `3*a*b/c + 2` under `--timeout 3000` gave "no law
+  found"; 1,000,000 rows took 68 s against the 60 s default (a
+  three-factor log-linear form alone took 40 s fitted on every row).
+  Both now give the law, the million rows in about 3 s.
+- **`stopped_by` says when the budget cut the answers' assembly**:
+  `timeout` (or `memory`) when finalists were left unexamined, even if
+  the search had ended early (it said `exact_exit`).
+- **`--max-memory` stops and writes a result.** The sum-of-terms step's
+  prepared terms (a Gram matrix of up to 128 MB in one block) are not
+  taken when they would not fit under 75% of the limit; the search stops
+  there with `stopped_by: memory`. Before, the block took the heap past
+  the limit and the program exited 3 with nothing written (300 rows of
+  six columns under `--max-memory 64`).
+- **Memory documented as measured**: 190 MB on 100- and 120-row tables
+  of three columns, 470 MB on 1,000 rows of five, 575 MB on 300 rows of
+  six columns of noise, 485 MB at 30 columns (the reference gave 185 to
+  435 MB, and 170 to 190 MB at 30 columns).
+- An added zero is not printed (`... + 0))` after a shift snapped to 0);
+  an undecodable byte in a column name is shown in messages as `�`, as
+  the warning says, not as the escape `\u{fffd}`.
+- Tests: a 200,000-row law under a 3 s budget, a memory-limited noise
+  table writing a result, the added zero, the replacement character; 83
+  library and 8 command-line tests.
+
 ## 2.1.1
 
 - **A noisy power law on the target as given is found.** Its exponents
